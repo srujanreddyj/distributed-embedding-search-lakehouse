@@ -36,6 +36,7 @@ Modal endpoint
 /search_text
 /search_images
 /search_all
+browser UI
 ```
 
 ## Why This Project Exists
@@ -106,6 +107,12 @@ Search both text and image tables from one query.
 }
 ```
 
+### Browser UI
+
+The Modal app also serves a small browser UI. It calls `/api/search_all`, renders FineWeb-Edu text matches beside COCO image matches, and serves persisted COCO images through `/image/{image_id}`.
+
+Images are served through Modal because stored paths like `/data/coco_images/...` are internal Modal Volume paths and are not directly accessible by a browser.
+
 ## Execution Order
 
 1. Finish local FineWeb-Edu sample extraction.
@@ -125,12 +132,104 @@ Search both text and image tables from one query.
 - [x] Python 3.11 virtual environment with `uv`
 - [x] Project scaffold
 - [x] FineWeb-Edu local sample extraction
-- [ ] Local LanceDB text smoke test
-- [ ] Local Ray text embedding pipeline
-- [ ] COCO image-caption sample extraction
-- [ ] Local image embedding smoke test
-- [ ] Modal GPU batch job
-- [ ] Modal search endpoints
+- [x] Local LanceDB text smoke test
+- [x] Local Ray text embedding pipeline
+- [x] COCO image-caption sample extraction
+- [x] Local image embedding smoke test
+- [x] Local Ray image embedding pipeline
+- [x] Modal GPU image batch job
+- [x] Modal `/search_images` endpoint
+- [x] Modal text batch job
+- [x] Modal `/search_text` endpoint
+- [x] Modal `/search_all` endpoint
+- [x] Modal-hosted browser UI
+
+## Current Metrics
+
+| Run | Records | GPU | Ray actors | Batch size | Runtime | Records/sec |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Modal image batch | 100 | L4 | 1 | 32 | 21.84 sec | 4.58 |
+| Modal text batch | 500 | L4 | 1 | 128 | 16.48 sec | 30.34 |
+
+## Endpoint Evidence
+
+`/search_images` validates the serving path: a text query is embedded with CLIP and searched against persisted image vectors in LanceDB on Modal Volume.
+
+Example query:
+
+```json
+{
+  "query": "a woman cutting a cake",
+  "k": 5
+}
+```
+
+Top result:
+
+```json
+{
+  "image_id": "coco_000000522418",
+  "filename": "COCO_val2014_000000522418.jpg",
+  "caption": "A woman wearing a net on her head cutting a cake.",
+  "distance": 1.3600707054138184
+}
+```
+
+Another query, `"people riding horses"`, returned horse-related matches, including:
+
+```json
+{
+  "image_id": "coco_000000037675",
+  "caption": "Horses graze in front of a large building amid snow.",
+  "distance": 1.4331679344177246
+}
+```
+
+These results are demo-scale retrieval examples, not benchmark claims.
+
+`/search_text` validates the text serving path: a text query is embedded with MiniLM and searched against persisted FineWeb-Edu text vectors in LanceDB on Modal Volume.
+
+Example query:
+
+```json
+{
+  "query": "What is reinforcement learning?",
+  "k": 5
+}
+```
+
+Top result:
+
+```json
+{
+  "id": "21",
+  "url": "http://www.funderstanding.com/category/child-development/brain-child-development/",
+  "source": "HuggingFaceFW/fineweb-edu/sample-10BT",
+  "token_count": 1062,
+  "distance": 1.2111157178878784
+}
+```
+
+The top result discusses learning, motivation, and observational learning. Because this run indexed only 500 sampled documents, the search result proves the endpoint and vector table work, but it should not be treated as a high-quality domain search benchmark for reinforcement learning.
+
+`/search_all` validates the final multimodal serving shape: one query searches both tables and returns separate ranked lists.
+
+Example query:
+
+```json
+{
+  "query": "children playing outside",
+  "k": 3
+}
+```
+
+The endpoint returned `text_matches` from FineWeb-Edu and `image_matches` from COCO captions. The response intentionally includes this note:
+
+```text
+Text and image matches are ranked separately because they use different embedding models and distance scales.
+```
+
+That design avoids pretending MiniLM text distances and CLIP image distances are directly comparable.
 
 ## References
 

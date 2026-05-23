@@ -1,0 +1,356 @@
+<!-- # WHOLE UI HTML PAGE Is created using codex.  -->
+
+<!-- HTML_PAGE = """ -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Multimodal Lakehouse Search</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18202a;
+      --muted: #5c6675;
+      --line: #d8dee8;
+      --panel: #ffffff;
+      --page: #f5f7fb;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --chip: #eef6f5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--page);
+      color: var(--ink);
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.15;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    .subhead {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+      max-width: 720px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border: 1px solid #b7d8d3;
+      background: var(--chip);
+      color: var(--accent-dark);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+
+    form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 86px 116px;
+      gap: 10px;
+      margin: 22px 0;
+    }
+
+    input,
+    select,
+    button {
+      height: 42px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      border-radius: 6px;
+    }
+
+    input {
+      padding: 0 13px;
+    }
+
+    select {
+      padding: 0 10px;
+    }
+
+    button {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: white;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+
+    .note,
+    .error {
+      min-height: 22px;
+      margin: -6px 0 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .error {
+      color: #a33a2b;
+    }
+
+    .results {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    section {
+      min-width: 0;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+    }
+
+    .list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .text-item {
+      padding: 14px;
+    }
+
+    .image-item img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      background: #e8edf5;
+    }
+
+    .image-meta {
+      padding: 12px 14px 14px;
+    }
+
+    .caption,
+    .snippet {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .meta span {
+      padding: 3px 7px;
+      background: #f0f3f8;
+      border-radius: 999px;
+    }
+
+    a {
+      color: var(--accent-dark);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 820px) {
+      header,
+      .results {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+
+      form {
+        grid-template-columns: 1fr;
+      }
+
+      .status {
+        justify-self: start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Multimodal Lakehouse Search</h1>
+        <p class="subhead">Search FineWeb-Edu text and COCO image-caption embeddings persisted in LanceDB on Modal Volume.</p>
+      </div>
+      <div class="status"><span class="dot"></span> Modal + Ray + LanceDB</div>
+    </header>
+
+    <form id="search-form">
+      <input id="query" name="query" value="children playing outside" autocomplete="off" />
+      <select id="k" name="k">
+        <option value="3">3</option>
+        <option value="5" selected>5</option>
+        <option value="8">8</option>
+      </select>
+      <button id="submit" type="submit">Search</button>
+    </form>
+
+    <div id="message" class="note">Text and image results are ranked separately because they use different embedding spaces.</div>
+
+    <div class="results">
+      <section>
+        <h2>Text Matches</h2>
+        <div id="text-results" class="list"></div>
+      </section>
+
+      <section>
+        <h2>Image Matches</h2>
+        <div id="image-results" class="list"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const form = document.getElementById("search-form");
+    const queryInput = document.getElementById("query");
+    const kInput = document.getElementById("k");
+    const submit = document.getElementById("submit");
+    const message = document.getElementById("message");
+    const textResults = document.getElementById("text-results");
+    const imageResults = document.getElementById("image-results");
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderText(matches) {
+      textResults.innerHTML = matches.map((item) => `
+        <article class="item text-item">
+          <p class="snippet">${escapeHtml(item.text)}</p>
+          <div class="meta">
+            <span>distance ${Number(item.distance).toFixed(3)}</span>
+            <span>${escapeHtml(item.source)}</span>
+            ${item.url ? `<span><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">source</a></span>` : ""}
+          </div>
+        </article>
+      `).join("");
+    }
+
+    function renderImages(matches) {
+      imageResults.innerHTML = matches.map((item) => `
+        <article class="item image-item">
+          <img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.caption)}" loading="lazy" />
+          <div class="image-meta">
+            <p class="caption">${escapeHtml(item.caption)}</p>
+            <div class="meta">
+              <span>distance ${Number(item.distance).toFixed(3)}</span>
+              <span>${escapeHtml(item.filename)}</span>
+            </div>
+          </div>
+        </article>
+      `).join("");
+    }
+
+    async function runSearch(event) {
+      event?.preventDefault();
+      const query = queryInput.value.trim();
+      const k = Number(kInput.value);
+
+      if (!query) {
+        message.className = "error";
+        message.textContent = "Enter a query.";
+        return;
+      }
+
+      submit.disabled = true;
+      message.className = "note";
+      message.textContent = "Searching text and image tables...";
+
+      try {
+        const response = await fetch("/api/search_all", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, k }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "Search failed.");
+        }
+
+        renderText(data.text_matches || []);
+        renderImages(data.image_matches || []);
+        message.textContent = data.note || "Search complete.";
+      } catch (error) {
+        message.className = "error";
+        message.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    }
+
+    form.addEventListener("submit", runSearch);
+    runSearch();
+  </script>
+</body>
+</html>
+<!-- """ -->

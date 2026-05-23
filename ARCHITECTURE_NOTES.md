@@ -894,10 +894,15 @@ Modal:
 - Ray starts inside Modal.
 - Ray image embedding job completes.
 - LanceDB image table persistence works by building under `/tmp` and copying to Modal Volume.
+- `/search_images` endpoint works against persisted Modal Volume LanceDB data.
+- Modal FineWeb-Edu text table build works with Ray and LanceDB persistence.
+- `/search_text` endpoint works against persisted Modal Volume LanceDB data.
+- `/search_all` endpoint works and returns separate text/image ranked lists.
+- Modal-hosted browser UI exists for portfolio/demo use.
 
 Current unresolved implementation item:
 
-- Add Modal search endpoints and the Modal text table build path.
+- Deploy and visually verify the browser UI, then commit the working milestone.
 
 ## Current Project Status
 
@@ -928,6 +933,11 @@ Current unresolved implementation item:
 - [x] Modal COCO image streaming works.
 - [x] Modal Ray image embedding starts and completes.
 - [x] Modal LanceDB image table persistence works through `/tmp -> Modal Volume`.
+- [x] Modal `/search_images` endpoint works.
+- [x] Modal text table build works through `/tmp -> Modal Volume`.
+- [x] Modal `/search_text` endpoint works.
+- [x] Modal `/search_all` endpoint works.
+- [x] Modal-hosted browser UI implemented.
 - [x] Architecture notes updated with decisions and trade-offs.
 
 ### In Progress
@@ -950,12 +960,37 @@ Latest successful Modal image run:
 }
 ```
 
+Latest successful Modal text run:
+
+```json
+{
+  "rows_requested": 500,
+  "rows_written": 500,
+  "seconds": 16.48,
+  "rows_per_second": 30.34,
+  "gpu": "L4",
+  "ray_actor_count": 1,
+  "batch_size": 128,
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "storage": "Modal Volume + LanceDB"
+}
+```
+
 Notes:
 
 - Modal health check passed.
 - Modal GPU smoke test passed on NVIDIA L4.
 - Ray emitted warnings about object store sizing and actor constructor args in object store. These are not blockers for the demo-scale run, but they are worth mentioning as operational tuning topics.
 - LanceDB emitted a fork-safety warning when used in a process that also starts Ray. The current workaround is acceptable for this demo because LanceDB table creation happens after Ray embedding output is materialized. For production, we would separate these phases more carefully or validate process start methods.
+- `/search_images` was tested with text queries including `"a woman cutting a cake"` and `"people riding horses"`.
+- The cake query returned `COCO_val2014_000000522418.jpg` with caption `"A woman wearing a net on her head cutting a cake."` as the top result.
+- The horses query returned horse-related and riding-related matches. This is useful demo evidence, but not a benchmark-quality retrieval evaluation.
+- `/search_text` was tested with `"What is reinforcement learning?"`.
+- The top text result discussed learning, motivation, and observational learning. This validates the endpoint and persisted text vector table, but relevance is limited by the 500-document sample size.
+- `/search_all` was tested with `"children playing outside"`.
+- `/search_all` returned separate `text_matches` and `image_matches` plus an explicit note that the two result lists are not globally ranked against each other.
+- A browser UI was added as an ASGI app. It calls `/api/search_all`, renders text and image matches side by side, and serves images through `/image/{image_id}`.
+- The image-serving route is necessary because `/data/coco_images/...` paths are internal Modal Volume paths, not public browser URLs.
 
 ### Remaining TODO
 
@@ -963,18 +998,19 @@ Notes:
 - [x] Serialize `captions` list as `captions_json`.
 - [ ] Add clear comments and docstrings throughout `modal_app.py`.
 - [x] Rerun Modal image build with a small limit such as `25` or `100`.
-- [ ] Add Modal text table build function using FineWeb-Edu.
+- [x] Add Modal text table build function using FineWeb-Edu.
 - [ ] Add combined `build_lakehouse` function.
-- [ ] Add `/search_images` endpoint.
-- [ ] Add `/search_text` endpoint.
-- [ ] Add `/search_all` endpoint.
-- [ ] Run `modal serve modal_app.py`.
-- [ ] Test endpoints with `curl`.
+- [x] Add `/search_images` endpoint.
+- [x] Add `/search_text` endpoint.
+- [x] Add `/search_all` endpoint.
+- [x] Add Modal-hosted browser UI.
+- [x] Run `modal serve modal_app.py`.
+- [x] Test endpoints with `curl`.
 - [ ] Capture metrics:
   - [ ] Local text Ray.
   - [ ] Local image Ray.
-  - [ ] Modal GPU image.
-  - [ ] Modal GPU text.
+  - [x] Modal GPU image.
+  - [x] Modal GPU text.
 - [ ] Update README status and metrics table.
 - [ ] Commit stable milestones to git.
 
