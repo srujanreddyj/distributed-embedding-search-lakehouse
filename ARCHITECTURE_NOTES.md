@@ -892,11 +892,12 @@ Modal:
 - CLIP model inference on Modal GPU.
 - COCO caption streaming.
 - Ray starts inside Modal.
-- Ray image embedding job completes before LanceDB persistence.
+- Ray image embedding job completes.
+- LanceDB image table persistence works by building under `/tmp` and copying to Modal Volume.
 
 Current unresolved implementation item:
 
-- Adjust LanceDB persistence to build under `/tmp` and copy final artifacts to the Modal Volume.
+- Add Modal search endpoints and the Modal text table build path.
 
 ## Current Project Status
 
@@ -926,32 +927,42 @@ Current unresolved implementation item:
 - [x] Modal GPU smoke test passed.
 - [x] Modal COCO image streaming works.
 - [x] Modal Ray image embedding starts and completes.
+- [x] Modal LanceDB image table persistence works through `/tmp -> Modal Volume`.
 - [x] Architecture notes updated with decisions and trade-offs.
 
 ### In Progress
 
-- [ ] Modal image table persistence to LanceDB.
+- [ ] Modal search endpoints.
 
-Current blocker:
+Latest successful Modal image run:
 
-```text
-LanceDB failed when writing directly to Modal Volume:
-Unable to rename file: Operation not permitted
+```json
+{
+  "rows_requested": 100,
+  "rows_written": 100,
+  "seconds": 21.84,
+  "rows_per_second": 4.58,
+  "gpu": "L4",
+  "ray_actor_count": 1,
+  "batch_size": 32,
+  "model": "sentence-transformers/clip-ViT-B-32",
+  "storage": "Modal Volume + LanceDB"
+}
 ```
 
-Next fix:
+Notes:
 
-```text
-Write LanceDB to Modal container /tmp first,
-then copy the completed database directory to /data/lancedb on the Modal Volume.
-```
+- Modal health check passed.
+- Modal GPU smoke test passed on NVIDIA L4.
+- Ray emitted warnings about object store sizing and actor constructor args in object store. These are not blockers for the demo-scale run, but they are worth mentioning as operational tuning topics.
+- LanceDB emitted a fork-safety warning when used in a process that also starts Ray. The current workaround is acceptable for this demo because LanceDB table creation happens after Ray embedding output is materialized. For production, we would separate these phases more carefully or validate process start methods.
 
 ### Remaining TODO
 
-- [ ] Fix `build_image_table` LanceDB persistence using `/tmp -> Modal Volume`.
-- [ ] Serialize `captions` list as `captions_json`.
+- [x] Fix `build_image_table` LanceDB persistence using `/tmp -> Modal Volume`.
+- [x] Serialize `captions` list as `captions_json`.
 - [ ] Add clear comments and docstrings throughout `modal_app.py`.
-- [ ] Rerun Modal image build with a small limit such as `25` or `100`.
+- [x] Rerun Modal image build with a small limit such as `25` or `100`.
 - [ ] Add Modal text table build function using FineWeb-Edu.
 - [ ] Add combined `build_lakehouse` function.
 - [ ] Add `/search_images` endpoint.
