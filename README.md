@@ -153,6 +153,34 @@ Images are served through Modal because stored paths like `/data/coco_images/...
 
 ## Endpoint Evidence
 
+## UI Demo
+
+The deployed Modal UI provides a search box for multimodal retrieval. A query is sent to `/api/search_all`, then the page renders FineWeb-Edu text snippets beside COCO image-caption matches.
+
+The UI also exposes image files through:
+
+```text
+/image/{image_id}
+```
+
+This route is necessary because image paths such as `/data/coco_images/coco_000000522418.jpg` exist inside the Modal container/Volume and are not public browser URLs.
+
+Good demo queries:
+
+```text
+a woman cutting a cake
+children playing outside
+people riding horses
+```
+
+Visual success criteria:
+
+- Text results render with snippets and source metadata.
+- Image results render as actual image cards, not broken thumbnails.
+- The page keeps text and image rankings separate.
+
+## Endpoint Evidence
+
 `/search_images` validates the serving path: a text query is embedded with CLIP and searched against persisted image vectors in LanceDB on Modal Volume.
 
 Example query:
