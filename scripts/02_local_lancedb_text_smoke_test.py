@@ -65,10 +65,10 @@ def main(limit: int = 500) -> None:
 
     print(f"\nSearch query: {query}")
     results = (
-    table.search(query_vector, vector_column_name="text_vector")
-    .limit(5)
-    .to_pandas()
-)
+        table.search(query_vector, vector_column_name="text_vector")
+        .limit(5)
+        .to_pandas()
+    )
 
     for _, row in results.iterrows():
         print("\n---")

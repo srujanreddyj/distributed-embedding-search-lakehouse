@@ -8,3 +8,4 @@ pandas>=2.0.0
 numpy>=1.26.0
 fastapi[standard]
 tqdm
+Pillow>=10.0.0

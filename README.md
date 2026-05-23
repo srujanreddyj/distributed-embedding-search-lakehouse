@@ -8,7 +8,7 @@ The goal is to demonstrate the architecture and trade-offs behind distributed AI
 - Modal for serverless GPU execution.
 - LanceDB for vector storage and semantic retrieval.
 - FineWeb-Edu for educational text search.
-- Flickr30k for text-to-image search.
+- COCO image-caption data for text-to-image search.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ Ray Data batch inference
 LanceDB text_documents table
 
 
-Flickr30k image-caption sample
+COCO image-caption sample
         ↓
 CLIP/OpenCLIP-style embedding model
         ↓
@@ -111,7 +111,7 @@ Search both text and image tables from one query.
 1. Finish local FineWeb-Edu sample extraction.
 2. Build local LanceDB text smoke test.
 3. Build local Ray text embedding pipeline.
-4. Add Flickr30k sample extraction.
+4. Add COCO image-caption sample extraction.
 5. Build local CLIP/OpenCLIP-style image embedding smoke test.
 6. Build local Ray image embedding pipeline.
 7. Move both pipelines into a Modal GPU batch job.
@@ -127,7 +127,7 @@ Search both text and image tables from one query.
 - [x] FineWeb-Edu local sample extraction
 - [ ] Local LanceDB text smoke test
 - [ ] Local Ray text embedding pipeline
-- [ ] Flickr30k sample extraction
+- [ ] COCO image-caption sample extraction
 - [ ] Local image embedding smoke test
 - [ ] Modal GPU batch job
 - [ ] Modal search endpoints
@@ -136,6 +136,6 @@ Search both text and image tables from one query.
 
 - [LanceDB documentation](https://docs.lancedb.com/)
 - [LanceDB OpenCLIP integration](https://docs.lancedb.com/integrations/embedding/openclip)
-- [Flickr30k dataset on Hugging Face](https://huggingface.co/datasets/nlphuji/flickr30k)
+- [COCO Image Captioning dataset on Hugging Face](https://hf.co/datasets/MagiBoss/COCO-Image-Captioning)
 - [Ray Data working with images](https://docs.ray.io/en/master/data/working-with-images.html)
 - [Ray end-to-end multimodal AI workloads](https://docs.ray.io/en/master/ray-overview/examples/e2e-multimodal-ai-workloads/index.html)

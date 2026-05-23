@@ -16,7 +16,7 @@ FineWeb-Edu text sample
   -> Ray Data batch inference
   -> LanceDB text_documents table
 
-Flickr30k image-caption sample
+COCO image-caption sample
   -> CLIP/OpenCLIP-style embedding model
   -> Ray Data batch inference
   -> LanceDB image_documents table
@@ -27,7 +27,7 @@ Modal endpoint
   -> /search_all
 ```
 
-The goal is not to process the full FineWeb-Edu or Flickr30k datasets. The goal is to demonstrate the engineering pattern behind production-scale multimodal systems while keeping cost, complexity, and runtime controlled.
+The goal is not to process the full FineWeb-Edu or COCO image-caption datasets. The goal is to demonstrate the engineering pattern behind production-scale multimodal systems while keeping cost, complexity, and runtime controlled.
 
 ## Core Interview Story
 
@@ -125,9 +125,9 @@ We use a streamed sample because:
 
 The trade-off is that metrics from a few thousand documents should not be presented as production-scale performance. They are demo-scale metrics for validating the architecture.
 
-### Why Flickr30k?
+### Why COCO Image-Caption Data?
 
-Flickr30k is a standard image-caption style dataset. It is suitable for a demo because it contains images and natural-language captions, which lets us build text-to-image search without inventing labels or scraping assets.
+COCO-style image-caption data is a strong fit for a text-to-image demo because the images are paired with natural-language captions. That lets us build CLIP-style retrieval without inventing labels or scraping assets.
 
 We use a small sample because:
 
@@ -136,6 +136,44 @@ We use a small sample because:
 - Image workloads are more expensive than text workloads, so cost control matters.
 
 The trade-off is that retrieval quality will depend heavily on sample size and caption coverage. That is acceptable because the demo is about the pipeline architecture, not claiming state-of-the-art retrieval.
+
+### How Do FineWeb-Edu And COCO Relate?
+
+FineWeb-Edu and COCO do not need to correlate at the row level. The project is not trying to match a specific text document to a specific image during ingestion.
+
+Instead, the lakehouse contains two independent collections:
+
+```text
+text_documents  -> educational web text
+image_documents -> image-caption records
+```
+
+The correlation happens at query time:
+
+```text
+query -> search_text  -> related educational text
+query -> search_images -> related images and captions
+```
+
+This is closer to a real multimodal lakehouse, where articles, images, videos, captions, metadata, and embeddings may come from different sources but become searchable through semantic retrieval.
+
+Important trade-off:
+
+- Text documents use a text embedding model.
+- Images use a CLIP-style multimodal embedding model.
+- Their distances are not directly comparable.
+
+Because of that, `/search_all` should return separate ranked lists instead of pretending one global ranking is meaningful:
+
+```json
+{
+  "query": "...",
+  "text_matches": [],
+  "image_matches": []
+}
+```
+
+A production system could calibrate scores, use a single shared multimodal embedding model for all content, or add a reranker.
 
 ## Storage Design
 
@@ -216,7 +254,7 @@ Follow this order so each new moving part is isolated:
 1. Finish local FineWeb-Edu sample extraction.
 2. Build local LanceDB text smoke test.
 3. Build local Ray text embedding pipeline.
-4. Add Flickr30k sample extraction.
+4. Add COCO image-caption sample extraction.
 5. Build local CLIP/OpenCLIP-style image embedding smoke test.
 6. Build local Ray image embedding pipeline.
 7. Move both pipelines into a Modal GPU batch job.
@@ -365,7 +403,7 @@ The project will not include:
 - Large-scale retries.
 - Multi-region deployment.
 - Full FineWeb-Edu processing.
-- Full Flickr30k processing.
+- Full COCO image-caption processing.
 - Production monitoring.
 - Streaming ingestion.
 - Production-grade indexing strategy.
@@ -376,7 +414,7 @@ The goal is a clean, explainable multimodal demo.
 
 - [LanceDB documentation](https://docs.lancedb.com/)
 - [LanceDB OpenCLIP integration](https://docs.lancedb.com/integrations/embedding/openclip)
-- [Flickr30k dataset on Hugging Face](https://huggingface.co/datasets/nlphuji/flickr30k)
+- [COCO Image Captioning dataset on Hugging Face](https://hf.co/datasets/MagiBoss/COCO-Image-Captioning)
 - [Ray Data working with images](https://docs.ray.io/en/master/data/working-with-images.html)
 - [Ray end-to-end multimodal AI workloads](https://docs.ray.io/en/master/ray-overview/examples/e2e-multimodal-ai-workloads/index.html)
 
