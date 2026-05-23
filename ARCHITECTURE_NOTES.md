@@ -465,3 +465,511 @@ Important:
 
 - `.env` must stay out of git.
 - The token should never be printed in logs or committed.
+
+## Build Log And Architecture Decisions
+
+This section records decisions made during implementation. The purpose is to preserve the reasoning trail, not just the final code.
+
+### Why Did We Move From Text-Only To Multimodal?
+
+Initial direction:
+
+```text
+FineWeb-Edu -> text embeddings -> Ray -> Modal -> LanceDB
+```
+
+Updated direction:
+
+```text
+FineWeb-Edu text records -> text embeddings -> LanceDB text table
+COCO image-caption records -> CLIP embeddings -> LanceDB image table
+```
+
+Why:
+
+- A small text-only demo can run comfortably on a laptop, which makes Ray and Modal feel less justified.
+- Image workloads are more realistic for distributed/GPU infrastructure because they involve image decoding, preprocessing, larger model inference, and text-to-image retrieval.
+- Multimodal search better matches AI-native lakehouse patterns where raw assets, metadata, embeddings, and derived features are stored together.
+
+Trade-off:
+
+- Multimodal adds complexity: more datasets, more schemas, more models, and more endpoint design.
+- The added complexity is worthwhile because it makes the architecture easier to defend in interviews.
+
+### Why FineWeb-Edu And COCO Do Not Need Row-Level Correlation
+
+The project has two independent collections:
+
+```text
+text_documents  -> educational web text
+image_documents -> COCO image-caption records
+```
+
+The records do not need to match each other during ingestion. Instead, the user's query is the bridge:
+
+```text
+query -> /search_text   -> text matches
+query -> /search_images -> image matches
+query -> /search_all    -> both result sets
+```
+
+Why:
+
+- Real lakehouses often contain heterogeneous assets from different sources.
+- Semantic retrieval can make those assets searchable from one interface even if they do not share row-level keys.
+
+Trade-off:
+
+- Text embeddings and CLIP image embeddings live in different vector spaces.
+- Distances from the two spaces are not directly comparable.
+
+Decision:
+
+- `/search_all` should return separate ranked lists:
+
+  ```json
+  {
+    "query": "...",
+    "text_matches": [],
+    "image_matches": []
+  }
+  ```
+
+- Do not merge text and image results into one global ranking unless we add calibration, a shared embedding model, or a reranker.
+
+### Dataset Decision: Flickr30k Rejected For First Version
+
+We first considered:
+
+```text
+nlphuji/flickr30k
+```
+
+What happened:
+
+- `datasets.load_dataset("nlphuji/flickr30k", ...)` failed because the repo contains an old-style dataset script.
+- The installed `datasets` version no longer supports loading dataset scripts in that path.
+
+Why not fight this immediately:
+
+- We could load converted Parquet shards manually.
+- But that would add dataset-specific workaround complexity before the main Modal/Ray/LanceDB architecture was stable.
+
+Decision:
+
+- Do not use Flickr30k on the critical path.
+- Prefer a dataset that loads cleanly through standard Hugging Face dataset/parquet paths.
+
+Trade-off:
+
+- Flickr30k is a recognized image-caption dataset.
+- Avoiding it keeps implementation smoother and lets us focus on the infrastructure goal.
+
+### Dataset Decision: MagiBoss COCO Rejected For Main Demo
+
+We inspected:
+
+```text
+MagiBoss/COCO-Image-Captioning
+```
+
+Schema:
+
+```text
+image: PIL image
+text: str
+```
+
+What happened:
+
+- The first sampled caption was Thai, not English.
+
+Why this matters:
+
+- Our demo queries are English.
+- For an interview demo, query behavior should be predictable and easy to inspect.
+
+Decision:
+
+- Do not use this dataset as the main image dataset.
+
+Trade-off:
+
+- The schema was simple and attractive.
+- Non-English captions make the demo less clear unless we intentionally build multilingual retrieval.
+
+### Dataset Decision: COCO Dog Dataset As Smoke Test
+
+We inspected:
+
+```text
+ArkaMukherjee/coco_dog_images_with_captions
+```
+
+Schema:
+
+```text
+image: PIL image
+captions: str
+```
+
+Why it was useful:
+
+- It loaded cleanly.
+- Captions were English.
+- Schema was simple.
+- It was enough to prove the local image pipeline:
+
+  ```text
+  local image files -> CLIP embeddings -> Ray -> LanceDB -> image search
+  ```
+
+Trade-off:
+
+- Domain is narrow: mostly dogs.
+- Good for a smoke test, weaker for portfolio positioning.
+
+Decision:
+
+- Keep it as a local learning checkpoint/fallback.
+- Do not use it as the final Modal demo dataset.
+
+### Dataset Decision: Multimodal-Fatima COCO Captions As Main Image Dataset
+
+We inspected:
+
+```text
+Multimodal-Fatima/COCO_captions_train
+```
+
+Schema:
+
+```text
+image: PIL image
+filepath: str
+sentids: list
+filename: str
+imgid: int
+split: str
+sentences_tokens: list
+sentences_raw: list
+sentences_sentid: list
+cocoid: int
+id: int
+```
+
+Why this is the best main image dataset:
+
+- General COCO image-caption coverage.
+- English captions.
+- Multiple human captions per image.
+- Stable metadata: `cocoid`, `imgid`, `filename`, `split`.
+- Rich enough to look like a real multimodal table.
+
+Implementation decision:
+
+- Use the first caption as the display/search caption:
+
+  ```python
+  caption = captions[0]
+  ```
+
+- Preserve all captions as serialized metadata:
+
+  ```python
+  captions_json = json.dumps(captions)
+  ```
+
+Trade-off:
+
+- More complex schema than the dog dataset.
+- Worth it because the final demo is more general and more credible.
+
+### Why Serialize Caption Lists As JSON?
+
+Ray warned when passing a list/object column through Arrow:
+
+```text
+Failed to convert column 'captions' into pyarrow array
+```
+
+Why:
+
+- `captions` is a Python list per row.
+- Ray Data and Arrow prefer columns with stable, simple types.
+
+Decision:
+
+- Store the primary caption as a string column:
+
+  ```text
+  caption
+  ```
+
+- Store all captions as JSON text:
+
+  ```text
+  captions_json
+  ```
+
+Trade-off:
+
+- JSON text is less queryable than a native nested array.
+- It is simpler and more robust for Ray -> pandas -> LanceDB in the first version.
+
+Future improvement:
+
+- Use a proper Arrow list schema or a separate captions table if we need structured caption-level retrieval.
+
+### Why Modal Health Check Before GPU Work?
+
+We added a small Modal `health_check` before running GPU jobs.
+
+Why:
+
+- Modal failures can come from image builds, dependency versions, auth, Volume mounts, or Python imports.
+- A cheap CPU function isolates the infrastructure foundation before spending GPU money.
+
+Trade-off:
+
+- It is an extra step before the "real" demo.
+- It saves time by narrowing future failures.
+
+What it proved:
+
+- Modal image builds.
+- Core dependencies import remotely.
+- Modal Volume can be written and committed.
+
+### Why GPU Smoke Test Before Ray Batch Job?
+
+We added `gpu_smoke_test`.
+
+Why:
+
+- It verifies Modal can allocate an L4 GPU.
+- It verifies `torch.cuda.is_available()`.
+- It verifies `sentence-transformers/clip-ViT-B-32` can run on the GPU.
+- It checks embedding shape before introducing Ray, datasets, and LanceDB.
+
+Trade-off:
+
+- It downloads/loads a model separately from the batch job.
+- It gives a clean, cheap checkpoint for GPU readiness.
+
+### Why Use The Fully Qualified CLIP Model Name?
+
+Short model name:
+
+```text
+clip-ViT-B-32
+```
+
+Safer model name:
+
+```text
+sentence-transformers/clip-ViT-B-32
+```
+
+Why:
+
+- Modal/Hugging Face resolution can be stricter than local cached aliases.
+- The fully qualified repo ID avoids casing/alias issues such as `clip-Vit_b-32`.
+
+Decision:
+
+- Use `sentence-transformers/clip-ViT-B-32` everywhere.
+
+### Why Use Modal Secrets For `HF_TOKEN`?
+
+Local `.env` files do not automatically exist inside Modal containers.
+
+Decision:
+
+- Create a Modal Secret named:
+
+  ```text
+  hf-token
+  ```
+
+- Add it to functions that call Hugging Face:
+
+  ```python
+  secrets=[modal.Secret.from_name("hf-token")]
+  ```
+
+Why:
+
+- Hugging Face libraries read `HF_TOKEN` from the environment.
+- Authenticated requests get better rate limits and fewer flaky downloads.
+- Secrets keep credentials out of code and git.
+
+Trade-off:
+
+- Slightly more setup in Modal.
+- Correct approach for remote execution.
+
+### Why Write LanceDB To `/tmp` Before Copying To Modal Volume?
+
+Observed error:
+
+```text
+Unable to rename file: Operation not permitted
+```
+
+Context:
+
+- LanceDB/Lance commits data using filesystem operations such as atomic renames.
+- Modal Volume is persistent, but it does not behave exactly like a normal local POSIX disk for all operations.
+
+Decision:
+
+Build LanceDB on ephemeral container disk:
+
+```text
+/tmp/lancedb_build
+```
+
+Then copy the completed artifact into the persistent Modal Volume:
+
+```text
+/data/lancedb
+```
+
+Why:
+
+- `/tmp` is normal local disk inside the Modal container.
+- LanceDB can safely create and rename files there.
+- `/data` persists across Modal function runs and can be read by endpoints.
+
+Trade-off:
+
+- Requires a copy step.
+- Uses temporary container storage during the build.
+- Acceptable for demo-scale tables.
+
+Future improvement:
+
+- Use object storage/S3 directly if LanceDB support and filesystem semantics fit the production target.
+- Or validate LanceDB's recommended pattern for Modal Volumes if available.
+
+### Why Save Images To Disk Before Ray Embedding?
+
+The Modal image function streams image rows from Hugging Face. We save each image to a file before Ray reads the manifest.
+
+Why:
+
+- Ray Data can read a simple parquet manifest with paths.
+- Actors can load images from stable local paths.
+- It avoids passing PIL objects through Ray/Arrow.
+
+Trade-off:
+
+- Uses extra disk space.
+- Adds an image serialization step.
+
+Decision:
+
+- Save images under the Modal Volume during remote builds.
+- For LanceDB construction, use local `/tmp` for the database itself and copy the final DB to Volume.
+
+### What Has Been Proven So Far?
+
+Local:
+
+- FineWeb-Edu text sample extraction.
+- Local text embedding and LanceDB search.
+- Local Ray text embedding with stateful actors.
+- Local image-caption sample extraction.
+- Local CLIP image/caption embedding and LanceDB search.
+- Local Ray image embedding with stateful actors.
+
+Modal:
+
+- Remote dependency health check.
+- Modal Volume write and commit.
+- GPU allocation.
+- CLIP model inference on Modal GPU.
+- COCO caption streaming.
+- Ray starts inside Modal.
+- Ray image embedding job completes before LanceDB persistence.
+
+Current unresolved implementation item:
+
+- Adjust LanceDB persistence to build under `/tmp` and copy final artifacts to the Modal Volume.
+
+## Current Project Status
+
+### Completed
+
+- [x] Repo scaffold and Python 3.11 `uv` environment.
+- [x] Requirements setup.
+- [x] Modal authentication.
+- [x] Local `HF_TOKEN` handling discussed.
+- [x] Modal Secret direction for `HF_TOKEN` chosen.
+- [x] FineWeb-Edu text sample extraction.
+- [x] Local LanceDB text smoke test.
+- [x] Local Ray text embedding pipeline.
+- [x] Local Ray text search validation.
+- [x] Multimodal scope update.
+- [x] Dataset exploration and trade-off decisions:
+  - [x] Rejected Flickr30k for old dataset-script issue.
+  - [x] Rejected MagiBoss COCO because sampled captions were non-English.
+  - [x] Used COCO dog dataset for local image smoke testing.
+  - [x] Chose `Multimodal-Fatima/COCO_captions_train` for main Modal image pipeline.
+- [x] Local image-caption sample extraction.
+- [x] Local CLIP image embedding smoke test.
+- [x] Local Ray image embedding pipeline.
+- [x] Local Ray image search validation.
+- [x] Modal image builder upgrade.
+- [x] Modal health check passed.
+- [x] Modal GPU smoke test passed.
+- [x] Modal COCO image streaming works.
+- [x] Modal Ray image embedding starts and completes.
+- [x] Architecture notes updated with decisions and trade-offs.
+
+### In Progress
+
+- [ ] Modal image table persistence to LanceDB.
+
+Current blocker:
+
+```text
+LanceDB failed when writing directly to Modal Volume:
+Unable to rename file: Operation not permitted
+```
+
+Next fix:
+
+```text
+Write LanceDB to Modal container /tmp first,
+then copy the completed database directory to /data/lancedb on the Modal Volume.
+```
+
+### Remaining TODO
+
+- [ ] Fix `build_image_table` LanceDB persistence using `/tmp -> Modal Volume`.
+- [ ] Serialize `captions` list as `captions_json`.
+- [ ] Add clear comments and docstrings throughout `modal_app.py`.
+- [ ] Rerun Modal image build with a small limit such as `25` or `100`.
+- [ ] Add Modal text table build function using FineWeb-Edu.
+- [ ] Add combined `build_lakehouse` function.
+- [ ] Add `/search_images` endpoint.
+- [ ] Add `/search_text` endpoint.
+- [ ] Add `/search_all` endpoint.
+- [ ] Run `modal serve modal_app.py`.
+- [ ] Test endpoints with `curl`.
+- [ ] Capture metrics:
+  - [ ] Local text Ray.
+  - [ ] Local image Ray.
+  - [ ] Modal GPU image.
+  - [ ] Modal GPU text.
+- [ ] Update README status and metrics table.
+- [ ] Commit stable milestones to git.
+
+### Optional Later
+
+- [ ] Add S3 storage.
+- [ ] Add LanceDB indexing.
+- [ ] Add 2-GPU Modal run.
+- [ ] Add a simple UI.
