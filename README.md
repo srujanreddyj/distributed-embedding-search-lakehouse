@@ -12,6 +12,8 @@ The goal is to demonstrate the architecture and trade-offs behind distributed AI
 
 ## Architecture
 
+![Hand-drawn architecture diagram](assets/architecture-handdrawn.svg)
+
 ```text
 FineWeb-Edu text sample
         ↓
@@ -127,6 +129,106 @@ Images are served through Modal because stored paths like `/data/coco_images/...
 10. Add `/search_images`.
 11. Add `/search_all`.
 
+## Run And Deploy
+
+Create and activate the local environment:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv venv --python 3.11 --prompt distributed-embedding-search-lakehouse --clear .venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+Authenticate Modal:
+
+```bash
+modal token new
+modal profile current
+```
+
+Create the Hugging Face secret used by Modal functions:
+
+```bash
+modal secret create hf-token HF_TOKEN=your_hf_token_here
+```
+
+Run local validation scripts:
+
+```bash
+python scripts/01_make_sample.py
+python scripts/02_local_lancedb_text_smoke_test.py
+python scripts/03_local_ray_text_embed.py
+python scripts/04_local_ray_text_search.py
+python scripts/05_make_coco_sample.py
+python scripts/06_local_lancedb_image_smoke_test.py
+python scripts/07_local_ray_image_embed.py
+python scripts/08_local_ray_image_search.py
+```
+
+Run Modal health checks and batch jobs:
+
+```bash
+modal run modal_app.py
+```
+
+Serve the app temporarily during development:
+
+```bash
+modal serve modal_app.py
+```
+
+Deploy persistent endpoints and the browser UI:
+
+```bash
+modal deploy modal_app.py
+```
+
+Test the deployed endpoints:
+
+```bash
+curl -X POST "YOUR_SEARCH_TEXT_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is reinforcement learning?", "k": 5}'
+
+curl -X POST "YOUR_SEARCH_IMAGES_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "a woman cutting a cake", "k": 5}'
+
+curl -X POST "YOUR_SEARCH_ALL_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "children playing outside", "k": 3}'
+```
+
+Open the deployed browser UI URL printed by Modal and try:
+
+```text
+a woman cutting a cake
+children playing outside
+people riding horses
+```
+
+## Interview Talking Points
+
+- The first tiny runs are correctness checks, not proof that Ray is required. At `500` text records and `100` images, a single process can handle the workload.
+- Ray is included to preserve the production batch-inference shape: partitioned reads, `map_batches`, and stateful actors that load models once and process many batches.
+- Modal provides ephemeral GPU execution without managing EC2, Kubernetes, or a persistent Ray cluster.
+- LanceDB stores vectors and metadata together, which fits a lakehouse-style retrieval workflow.
+- Image embedding makes the infrastructure more defensible than a text-only demo because image decoding, CLIP preprocessing, and GPU inference are heavier.
+- Text and image results are returned as separate ranked lists because MiniLM and CLIP distances are not calibrated against each other.
+- LanceDB is built under `/tmp` inside the Modal container and then copied to Modal Volume because direct LanceDB writes to the Volume hit filesystem rename limitations.
+- The browser UI serves images through `/image/{image_id}` because `/data/...` paths are internal Modal Volume paths, not public URLs.
+
+## Known Limitations
+
+- The current indexed datasets are intentionally small, so result quality is sample-limited.
+- The reported metrics are demo-scale validation metrics, not production benchmarks.
+- The app loads embedding models inside endpoint containers, so cold starts can be slow.
+- Text and image tables are stored in separate LanceDB roots for simplicity.
+- There is no authentication, authorization, rate limiting, monitoring dashboard, retry queue, or production observability.
+- There is no production indexing strategy or recall/latency tuning.
+- Images are served from Modal Volume for demo convenience; production media delivery would usually use object storage and a CDN.
+- The project does not process full FineWeb-Edu or full COCO.
+
 ## Current Status
 
 - [x] Python 3.11 virtual environment with `uv`
@@ -146,12 +248,20 @@ Images are served through Modal because stored paths like `/data/coco_images/...
 
 ## Current Metrics
 
-| Run | Records | GPU | Ray actors | Batch size | Runtime | Records/sec |
-| --- | ---: | --- | ---: | ---: | ---: | ---: |
-| Modal image batch | 100 | L4 | 1 | 32 | 21.84 sec | 4.58 |
-| Modal text batch | 500 | L4 | 1 | 128 | 16.48 sec | 30.34 |
+| Run | Records | GPU | Ray actors | Batch size | Runtime | Records/sec | Observed cost |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Modal image batch | 100 | L4 | 1 | 32 | 21.84 sec | 4.58 | - |
+| Modal text batch | 500 | L4 | 1 | 128 | 16.48 sec | 30.34 | - |
+| Modal image scale check | 250 | L4 | 1 | 32 | 21.95 sec | 11.39 | - |
+| Modal text scale check | 1,000 | L4 | 1 | 128 | 19.78 sec | 50.55 | - |
+| Modal image demo run | 1,000 | L4 | 1 | 32 | 33.08 sec | 30.23 | - |
+| Modal text demo run | 5,000 | L4 | 1 | 128 | 21.59 sec | 231.58 | - |
+| Modal image strong run | 2,500 | L4 | 1 | 32 | 39.80 sec | 62.82 | ~$0.04 |
+| Modal text strong run | 10,000 | L4 | 1 | 128 | 28.49 sec | 351.06 | ~$0.02 |
+| Modal image portfolio run | 5,000 | L4 | 1 | 32 | 72.10 sec | 69.34 | - |
+| Modal text portfolio run | 25,000 | L4 | 1 | 128 | 52.89 sec | 472.71 | - |
 
-## Endpoint Evidence
+The larger scale-check run shows why tiny smoke-test metrics can be misleading: fixed overheads like model loading, dataset setup, Ray startup, and Volume writes are amortized over more records as limits increase.
 
 ## UI Demo
 

@@ -135,7 +135,7 @@ def gpu_smoke_test():
     volumes={DATA_DIR: volume},
     secrets=[modal.Secret.from_name("hf-token")],
 )
-def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
+def build_image_table(limit: int=1000, batch_size: int = 32) -> dict:
     """Build the image LanceDB table on Modal using Ray and a GPU.
 
     This function streams COCO image-caption rows, saves raw images to the
@@ -412,7 +412,7 @@ def search_images(item: dict) -> dict:
     volumes={DATA_DIR: volume},
     secrets=[modal.Secret.from_name("hf-token")],
 )
-def build_text_table(limit: int = 500, batch_size: int = 128) -> dict:
+def build_text_table(limit: int = 5000, batch_size: int = 128) -> dict:
     """Build the FineWeb-Edu text LanceDb table on Modal using Ray
 
     This function mirrors the image table build path, but uses a text embedding model and stores results
@@ -915,18 +915,50 @@ def search_all(item: dict) -> dict:
 
 
 @app.local_entrypoint()
-def main() -> None:
-    """Run a remote Modal health checks from the local CLI."""
+def main(
+    text_limit: int = 500,
+    image_limit: int = 100,
+    text_batch_size: int = 128,
+    image_batch_size: int = 32,
+    build_text: bool = True,
+    build_images: bool = True,
+) -> None:
+    """Run a remote Modal health checks from the local CLI.
+    Run configurable Modal batch jobs from the CLI.
 
+    Args:
+        text_limit: Number of FineWeb-Edu records to stream for text embeddings.
+        image_limit: Number of COCO image-caption records to stream for image embeddings.
+        text_batch_size: Ray batch size for text embedding.
+        image_batch_size: Ray batch size for image embedding.
+        build_text: Whether to rebuild the text LanceDB table.
+        build_images: Whether to rebuild the image LanceDB table.
+    """
+    import time 
     health = health_check.remote()
     print("Health check results:", health)
 
     gpu = gpu_smoke_test.remote()
     print("GPU smoke test results:", gpu)
 
-    """Run the first tiny Modal GPU image batch job."""
-    result = build_image_table.remote(limit=100, batch_size=32)
-    print(result)
+    start = time.time()
+    print(f"{start}")
+    """Run the Modal GPU image batch job."""
+    if build_images:
+        image_result = build_image_table.remote(
+            limit=image_limit,
+            batch_size=image_batch_size,
+        )
+        print("Image table result:", image_result)
 
-    text_result = build_text_table.remote(limit=500, batch_size=128)
-    print("Text table result:", text_result)
+    image_end = time.time()
+
+    if build_text:
+        text_result = build_text_table.remote(
+            limit=text_limit,
+            batch_size=text_batch_size,
+        )
+        print("Text table result:", text_result)
+
+    text_end = time.time()
+    print(f"{start}, {image_end}, {text_end}")

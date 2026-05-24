@@ -873,6 +873,413 @@ Decision:
 - Save images under the Modal Volume during remote builds.
 - For LanceDB construction, use local `/tmp` for the database itself and copy the final DB to Volume.
 
+### Is Ray Pointless At The Current Dataset Size?
+
+Short answer: at the current demo scale, Ray is technically overkill.
+
+Current validated runs:
+
+```text
+Text: 500 FineWeb-Edu records
+Images: 100 COCO image-caption records
+```
+
+A single Python process could handle these sizes. That is not something to hide. It is an important part of the explanation.
+
+Interview framing:
+
+> At the initial 500/100 scale, Ray is not necessary. I used that run for correctness. Ray is included to demonstrate the production batch-inference pattern: partitioned reads, `map_batches`, and stateful actors that load models once and process many batches. The same code path can scale by increasing dataset size, actor count, and GPU resources.
+
+Why this is still a useful project:
+
+- The demo validates the end-to-end architecture without spending heavily.
+- Ray Data keeps the pipeline shape close to a larger production ingestion job.
+- The code uses stateful actors rather than repeatedly loading models.
+- The image pipeline is meaningfully heavier than text-only embedding.
+- Modal lets larger GPU-backed runs happen without a persistent cluster.
+
+Trade-off:
+
+- Small limits make the first version cheap and reliable.
+- Small limits also mean the current metrics are validation metrics, not evidence that distributed compute was required.
+
+Decision:
+
+- Be explicit in the README/interview: tiny runs prove correctness; larger runs prove scaling behavior.
+
+### Scaling Experiment Plan And Cost Framing
+
+Modal's pricing page listed these relevant rates during the build:
+
+```text
+Nvidia L4:       $0.000222 / sec
+Nvidia A10:      $0.000306 / sec
+CPU physical core: $0.0000131 / core / sec
+Memory:          $0.00000222 / GiB / sec
+```
+
+Our batch functions roughly use:
+
+```text
+1x L4 + 2 CPU + 16 GiB memory
+```
+
+Approximate runtime cost:
+
+```text
+0.000222 + 2*0.0000131 + 16*0.00000222
+~= $0.000284 / sec
+~= $1.02 / hour
+```
+
+Measured baseline:
+
+```text
+Image: 100 rows / 21.84 sec = 4.58 images/sec
+Text:  500 rows / 16.48 sec = 30.34 docs/sec
+```
+
+First scale-check run:
+
+```text
+Image: 250 rows / 21.95 sec = 11.39 images/sec
+Text:  1,000 rows / 19.78 sec = 50.55 docs/sec
+```
+
+Demo-scale run:
+
+```text
+Image: 1,000 rows / 33.08 sec = 30.23 images/sec
+Text:  5,000 rows / 21.59 sec = 231.58 docs/sec
+```
+
+Strong demo run:
+
+```text
+Image: 2,500 rows / 39.80 sec = 62.82 images/sec
+Text:  10,000 rows / 28.49 sec = 351.06 docs/sec
+Observed billed cost: ~$0.04 for image run, ~$0.02 for text run
+```
+
+Portfolio run:
+
+```text
+Image: 5,000 rows / 72.10 sec = 69.34 images/sec
+Text:  25,000 rows / 52.89 sec = 472.71 docs/sec
+```
+
+Interpretation:
+
+- Throughput improved as limits increased.
+- This is expected because fixed overheads such as Modal startup, model loading, Hugging Face dataset setup, Ray initialization, LanceDB table creation, and Volume copy/commit are amortized over more records.
+- Tiny runs are useful for correctness, but larger runs are better for performance discussion.
+- The text pipeline improves especially sharply because MiniLM inference is lightweight relative to the fixed setup cost.
+- The image pipeline remains slower because CLIP image embedding includes image loading, decoding, preprocessing, and heavier model inference.
+
+Suggested experiment ladder:
+
+| Run | Text docs | Images | Runtime | Cost | Purpose |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Smoke | 500 | 100 | done | not recorded | correctness |
+| Small scale | 1K | 250 | text 19.78 sec, image 21.95 sec | not recorded | quick scaling check |
+| Demo | 5K | 1K | text 21.59 sec, image 33.08 sec | not recorded | useful README metrics |
+| Strong demo | 10K | 2.5K | text 28.49 sec, image 39.80 sec | text ~$0.02, image ~$0.04 | better Ray talking point |
+| Portfolio run | 25K | 5K | text 52.89 sec, image 72.10 sec | observed cost TBD | strong screenshot |
+| Stretch | 50K | 10K | not run yet | estimate TBD | only if a longer run is acceptable |
+
+Measured scaling table:
+
+| Modality | Records | Runtime | Throughput |
+| --- | ---: | ---: | ---: |
+| Text | 500 | 16.48 sec | 30.34 docs/sec |
+| Text | 1,000 | 19.78 sec | 50.55 docs/sec |
+| Text | 5,000 | 21.59 sec | 231.58 docs/sec |
+| Text | 10,000 | 28.49 sec | 351.06 docs/sec |
+| Text | 25,000 | 52.89 sec | 472.71 docs/sec |
+| Image | 100 | 21.84 sec | 4.58 images/sec |
+| Image | 250 | 21.95 sec | 11.39 images/sec |
+| Image | 1,000 | 33.08 sec | 30.23 images/sec |
+| Image | 2,500 | 39.80 sec | 62.82 images/sec |
+| Image | 5,000 | 72.10 sec | 69.34 images/sec |
+
+Cost interpretation:
+
+- The measured strong demo costs were low: about two cents for 10K text rows and four cents for 2.5K image rows.
+- Image cost was higher despite fewer records because CLIP image embedding is heavier than MiniLM text embedding.
+- This supports the project argument that image workloads make GPU/serverless infrastructure more justified than text-only smoke tests.
+- Cost should still be monitored when increasing limits because dataset streaming, model loading, retries, and larger image volumes can change the bill.
+- The 25K/5K run is now the strongest portfolio-scale evidence: same architecture, larger limits, still completing in minutes on one L4.
+
+Important caveat:
+
+- Real cost can be higher than this estimate because of cold starts, model loading, dataset streaming, Volume operations, web calls, retries, and imperfect scaling.
+- A reasonable safety multiplier is 2-5x for planning small demo experiments.
+
+Recommended test order:
+
+```text
+1. 1K text + 250 images
+2. 5K text + 1K images
+3. 10K text + 2.5K images
+4. Stop and compare metrics
+```
+
+Only run `25K text + 5K images` if the previous run is stable.
+
+Interview framing:
+
+> I started with tiny limits to validate correctness, then increased the limits to observe runtime and cost. The architecture does not change as the workload grows: Ray partitions data, actors keep models warm, Modal provides ephemeral GPU compute, and LanceDB persists searchable embeddings.
+
+### Why Keep Text And Image Metrics Separate?
+
+Text and image embedding have different performance profiles.
+
+Text pipeline:
+
+- Uses `sentence-transformers/all-MiniLM-L6-v2`.
+- Processes short normalized text.
+- Throughput is higher.
+
+Image pipeline:
+
+- Uses `sentence-transformers/clip-ViT-B-32`.
+- Loads and decodes image files.
+- Performs CLIP image preprocessing and GPU inference.
+- Throughput is lower.
+
+Decision:
+
+- Report text docs/sec and image records/sec separately.
+- Do not blend them into one "records/sec" number for the whole system unless the workload mix is explicitly defined.
+
+Trade-off:
+
+- Separate metrics are less tidy.
+- They are more honest and more useful.
+
+### Ray Warnings Observed During Scaling Runs
+
+The larger Modal runs surfaced a few Ray/Lance warnings. None blocked the demo, but each is a useful operational talking point.
+
+Observed warning: actor constructor arguments in object store
+
+```text
+Actor with class name: 'MapWorker(MapBatches(...))' has constructor arguments
+in the object store and max_restarts > 0. If the arguments in the object store
+go out of scope or are lost, the actor restart will fail.
+```
+
+Interpretation:
+
+- Ray is warning about actor restart robustness.
+- We pass model names through `fn_constructor_args`.
+- For this demo, the argument is tiny and stable, so it is not a practical blocker.
+
+Production discussion:
+
+- Avoid large constructor args.
+- Keep model/config identifiers small and reconstruct state inside actors.
+- Use durable model artifacts or environment config rather than passing big objects.
+
+Observed warning: object store memory proportion
+
+```text
+Ray's object store is configured to use only ~19% or ~5.5% of available memory.
+For optimal Ray Data performance, set object_store_memory or
+RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION.
+```
+
+Interpretation:
+
+- Ray Data uses an object store to move blocks between operators.
+- Modal containers can expose a large memory number, and Ray chooses a conservative object-store fraction.
+- The current run uses tiny parquet manifests and small vector tables, so this is not a blocker.
+
+Production discussion:
+
+- Tune `ray.init(object_store_memory=...)`.
+- Watch object spilling and memory pressure as image counts grow.
+- Configure memory explicitly for predictable larger runs.
+
+Observed warning: high memory detector for image actor
+
+```text
+Operator 'MapBatches(ImageEmbedderActor)' uses ~5.1GiB of memory per task
+on average, but Ray only requests 0.0B per task at the start of the pipeline.
+Consider setting memory=5.1GiB.
+```
+
+Interpretation:
+
+- The CLIP actor and image batches use several GiB of memory.
+- Ray noticed memory use that is not declared in scheduling requirements.
+- With one actor and one GPU, concurrency is low, so the run completed.
+
+Production discussion:
+
+- Add explicit memory requirements to `map_batches` if scaling actor count.
+- Keep image batch size under control.
+- Monitor GPU memory and CPU memory separately.
+- Increase Modal memory or reduce batch size if OOM appears.
+
+Observed warning: LanceDB fork safety
+
+```text
+lance is not fork-safe. If you are using multiprocessing, use spawn instead.
+```
+
+Interpretation:
+
+- LanceDB warns when imported in a process that also starts Ray/multiprocessing.
+- In this project, LanceDB writes happen after Ray materializes the DataFrame.
+- The run completed, so the warning is not blocking the demo.
+
+Production discussion:
+
+- Separate embedding workers from database-writing processes.
+- Import/use LanceDB after Ray work completes.
+- Consider a dedicated writer function/job for larger pipelines.
+
+### Why Add A Browser UI?
+
+The JSON endpoints prove the API, but a browser UI makes the project easier to demo to other people.
+
+Decision:
+
+- Add a Modal-hosted FastAPI/ASGI UI.
+- Keep the HTML in `static/index.html` instead of a giant Python string.
+- Use `image.add_local_dir("static", remote_path="/root/static")` at the end of the Modal image chain so Modal does not rebuild dependency layers on every HTML change.
+
+Why:
+
+- The UI can be opened from a deployed Modal URL.
+- No separate frontend host is needed.
+- It shows text snippets and image cards side by side.
+
+Trade-off:
+
+- The UI is intentionally simple.
+- It is not a production frontend with routing, auth, caching, or state management.
+
+### Why Serve Images Through `/image/{image_id}`?
+
+The image table stores paths such as:
+
+```text
+/data/coco_images/coco_000000522418.jpg
+```
+
+Those are internal Modal Volume paths. A browser cannot load them directly.
+
+Decision:
+
+- Add an image-serving route:
+
+  ```text
+  GET /image/{image_id}
+  ```
+
+- Validate `image_id` before building the file path.
+- Return JPEG bytes with `FileResponse`.
+
+Why:
+
+- The UI can display real images from Modal Volume.
+- The LanceDB table can keep internal storage paths as metadata.
+- The browser only sees a safe HTTP route.
+
+Trade-off:
+
+- Serving images from Modal Volume is fine for a demo.
+- Production systems would typically store images in S3/object storage and serve them through a CDN or signed URLs.
+
+### Why Keep HTML In A Separate File?
+
+The UI started as an inline `HTML_PAGE` Python string, but that made `modal_app.py` noisy.
+
+Decision:
+
+- Move HTML/CSS/JS to:
+
+  ```text
+  static/index.html
+  ```
+
+- Read it in the UI route.
+
+Why:
+
+- UI edits are easier.
+- Python backend code stays focused on Modal/Ray/LanceDB.
+- The repo is easier for interviewers to scan.
+
+Trade-off:
+
+- Modal must explicitly include the `static/` directory.
+- We fixed that by adding local static files to the Modal image.
+
+Important Modal-specific lesson:
+
+- `image.add_local_dir(...)` should be last in the image chain.
+- If it appears before `pip_install(...)`, Modal warns because local file changes would cause unnecessary rebuild behavior.
+
+### Why Use `modal serve`, `modal deploy`, And `modal run` Differently?
+
+Each command has a different role.
+
+`modal run modal_app.py`:
+
+- Runs the local entrypoint.
+- Good for health checks and batch jobs.
+- Temporary app lifecycle.
+
+`modal serve modal_app.py`:
+
+- Keeps dev web endpoints alive.
+- Good for testing `/search_*` and the UI locally during development.
+
+`modal deploy modal_app.py`:
+
+- Creates persistent deployed endpoints.
+- Good for portfolio/demo use.
+
+Trade-off:
+
+- `modal run` may print endpoint URLs, but those URLs stop working when the run finishes.
+- Use `modal serve` or `modal deploy` for browser/curl endpoint testing.
+
+### Known Limitations To Say Out Loud
+
+- The current dataset limits are intentionally small.
+- Result quality is sample-limited.
+- Metrics are demo validation metrics, not production benchmarks.
+- Ray is not strictly required for the smallest runs.
+- Endpoint functions load embedding models in request containers, so cold starts can be slow.
+- Text and image distances are not directly comparable.
+- There is no authentication, authorization, rate limiting, monitoring dashboard, retry queue, or production observability.
+- There is no production index tuning or recall/latency evaluation.
+- LanceDB is copied from `/tmp` into Modal Volume as a demo workaround.
+- Images are served from Modal Volume for convenience; production would likely use object storage and CDN delivery.
+- The project does not process full FineWeb-Edu or full COCO.
+
+Interview framing:
+
+> This is not a production replica. It is a demo-scale implementation of the architecture pattern. I intentionally kept the first runs small, documented the limitations, and left clear extension points for scaling, indexing, S3 storage, authentication, and observability.
+
+### Strongest Interview Talking Points
+
+Use these concise points:
+
+- I started text-only, then expanded to multimodal because images better justify GPU and distributed batch inference.
+- Ray Data is used for the batch inference shape: read, partition, `map_batches`, stateful actors, write results.
+- Callable classes in `map_batches` create stateful actors, so models load once per actor and process many batches.
+- Modal gives GPU execution without managing EC2, Kubernetes, Docker registries, or a persistent Ray cluster.
+- LanceDB stores vectors and metadata together, matching a lakehouse-style retrieval pattern.
+- I kept text and image retrieval in separate embedding spaces and separate rankings because their scores are not calibrated.
+- I used Modal Volume for persistence, but had to build LanceDB under `/tmp` first because direct Volume writes hit filesystem rename limitations.
+- I added a browser UI and image-serving route so the demo is easy to show, not just query with curl.
+- I kept the demo cost-controlled and documented how to scale limits for more meaningful metrics.
+
 ### What Has Been Proven So Far?
 
 Local:
@@ -991,6 +1398,7 @@ Notes:
 - `/search_all` returned separate `text_matches` and `image_matches` plus an explicit note that the two result lists are not globally ranked against each other.
 - A browser UI was added as an ASGI app. It calls `/api/search_all`, renders text and image matches side by side, and serves images through `/image/{image_id}`.
 - The image-serving route is necessary because `/data/coco_images/...` paths are internal Modal Volume paths, not public browser URLs.
+- README now includes exact run/deploy commands, interview talking points, known limitations, and a hand-drawn style architecture diagram.
 
 ### Remaining TODO
 
@@ -1004,6 +1412,10 @@ Notes:
 - [x] Add `/search_text` endpoint.
 - [x] Add `/search_all` endpoint.
 - [x] Add Modal-hosted browser UI.
+- [x] Add exact run and deploy commands to README.
+- [x] Add interview talking points to README.
+- [x] Add known limitations to README.
+- [x] Add hand-drawn architecture diagram asset.
 - [x] Run `modal serve modal_app.py`.
 - [x] Test endpoints with `curl`.
 - [ ] Capture metrics:
