@@ -1280,6 +1280,67 @@ Use these concise points:
 - I added a browser UI and image-serving route so the demo is easy to show, not just query with curl.
 - I kept the demo cost-controlled and documented how to scale limits for more meaningful metrics.
 
+### Extension: Adding New Embedding Columns For Training
+
+A natural next step is to show iterative feature generation: take an existing LanceDB table, run another model over existing rows, and persist the result as a new feature column.
+
+Example:
+
+```text
+image_documents
+  image_id
+  image_path
+  caption
+  image_vector          # CLIP image embedding
+  caption_vector        # CLIP text embedding
+  caption_minilm_vector # new text embedding feature
+```
+
+Why this matters:
+
+- It demonstrates repeated transformation of the same media records.
+- It gets closer to the Lance/LanceDB lakehouse story from the talk.
+- It creates a training-ready feature table for downstream models.
+
+Trade-off:
+
+- The current demo mostly rebuilds tables with `mode="overwrite"`.
+- True in-place Lance schema evolution is a more advanced extension.
+- For a safe demo, create an enriched table/root first, then optionally promote it.
+
+Practical implementation path for this repo:
+
+```text
+1. Read existing image_documents from Modal Volume.
+2. Use Ray Data + a new embedding actor to compute caption_minilm_vector.
+3. Write an enriched LanceDB table under /tmp.
+4. Copy the enriched table to /data/lancedb_image_features.
+5. Expose a training export function that writes selected columns to Parquet.
+```
+
+Why not mutate the production image table immediately:
+
+- The existing `/search_images` endpoint depends on the current table.
+- Writing an enriched copy avoids breaking the serving path.
+- Once validated, the enriched table can become the new default.
+
+Downstream training shape:
+
+```text
+training rows:
+  image_path
+  caption
+  image_vector
+  caption_minilm_vector
+  split
+```
+
+Training access options:
+
+- Read the enriched LanceDB table directly in a Modal/Ray training job.
+- Export selected columns to Parquet on Modal Volume.
+- Later, move the Lance data or Parquet export to S3 for external training jobs.
+
 ### What Has Been Proven So Far?
 
 Local:

@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">Serverless Multimodal Lakehouse Search Architecture</title>
+  <desc id="desc">Hand-drawn style architecture diagram showing FineWeb-Edu and COCO data flowing through Modal, Ray Data, embedding actors, LanceDB, and browser search endpoints.</desc>
+  <defs>
+    <filter id="paper">
+      <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="3" seed="11" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="table" tableValues="0 0.09"/>
+      </feComponentTransfer>
+      <feBlend in="SourceGraphic" mode="multiply"/>
+    </filter>
+    <filter id="wobble">
+      <feTurbulence type="fractalNoise" baseFrequency="0.025" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.6"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M 1 1 L 12 6 L 1 11" fill="none" stroke="#28313d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .bg { fill: #fffaf0; }
+      .box { fill: #ffffff; stroke: #28313d; stroke-width: 2.6; filter: url(#wobble); }
+      .box-blue { fill: #edf7ff; }
+      .box-green { fill: #effaf3; }
+      .box-yellow { fill: #fff6d8; }
+      .box-pink { fill: #fff0f3; }
+      .box-purple { fill: #f5f0ff; }
+      .text { fill: #1f2933; font-family: "Comic Sans MS", "Bradley Hand", "Segoe Print", cursive; }
+      .title { font-size: 34px; font-weight: 700; }
+      .label { font-size: 22px; font-weight: 700; }
+      .small { font-size: 17px; }
+      .tiny { font-size: 14px; fill: #52606d; }
+      .line { fill: none; stroke: #28313d; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); filter: url(#wobble); }
+      .dash { stroke-dasharray: 9 8; marker-end: none; }
+      .note { fill: #fffdf6; stroke: #b7791f; stroke-width: 2; filter: url(#wobble); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="900"/>
+  <rect x="0" y="0" width="1400" height="900" fill="#fffaf0" filter="url(#paper)" opacity="0.9"/>
+
+  <text class="text title" x="70" y="58">Serverless Multimodal Lakehouse Search</text>
+  <text class="text small" x="72" y="88">Ray Data batch inference + Modal GPU execution + LanceDB vector storage</text>
+
+  <rect class="box box-blue" x="70" y="145" width="250" height="118" rx="12"/>
+  <text class="text label" x="94" y="184">FineWeb-Edu</text>
+  <text class="text small" x="94" y="214">sample-10BT text rows</text>
+  <text class="text tiny" x="94" y="240">id, text, url, token_count</text>
+
+  <rect class="box box-green" x="70" y="430" width="250" height="128" rx="12"/>
+  <text class="text label" x="94" y="470">COCO Captions</text>
+  <text class="text small" x="94" y="500">image + captions</text>
+  <text class="text tiny" x="94" y="526">image, cocoid, filename, split</text>
+
+  <rect class="box box-yellow" x="400" y="130" width="290" height="156" rx="12"/>
+  <text class="text label" x="425" y="170">Modal GPU Job</text>
+  <text class="text small" x="425" y="202">build_text_table()</text>
+  <text class="text tiny" x="425" y="230">L4 GPU, HF secret, Volume</text>
+  <text class="text tiny" x="425" y="254">stream -> parquet manifest</text>
+
+  <rect class="box box-yellow" x="400" y="420" width="290" height="166" rx="12"/>
+  <text class="text label" x="425" y="460">Modal GPU Job</text>
+  <text class="text small" x="425" y="492">build_image_table()</text>
+  <text class="text tiny" x="425" y="520">save raw images to Volume</text>
+  <text class="text tiny" x="425" y="544">stream -> parquet manifest</text>
+
+  <rect class="box box-purple" x="760" y="128" width="280" height="160" rx="12"/>
+  <text class="text label" x="786" y="168">Ray Data</text>
+  <text class="text small" x="786" y="200">map_batches()</text>
+  <text class="text tiny" x="786" y="228">TextEmbedderActor</text>
+  <text class="text tiny" x="786" y="252">MiniLM loaded once per actor</text>
+
+  <rect class="box box-purple" x="760" y="420" width="280" height="166" rx="12"/>
+  <text class="text label" x="786" y="460">Ray Data</text>
+  <text class="text small" x="786" y="492">map_batches()</text>
+  <text class="text tiny" x="786" y="520">ImageEmbedderActor</text>
+  <text class="text tiny" x="786" y="544">CLIP loaded once per actor</text>
+
+  <rect class="box box-pink" x="1110" y="130" width="230" height="156" rx="12"/>
+  <text class="text label" x="1132" y="170">LanceDB</text>
+  <text class="text small" x="1132" y="202">text_documents</text>
+  <text class="text tiny" x="1132" y="230">text + metadata</text>
+  <text class="text tiny" x="1132" y="254">text_vector</text>
+
+  <rect class="box box-pink" x="1110" y="420" width="230" height="166" rx="12"/>
+  <text class="text label" x="1132" y="460">LanceDB</text>
+  <text class="text small" x="1132" y="492">image_documents</text>
+  <text class="text tiny" x="1132" y="520">caption + metadata</text>
+  <text class="text tiny" x="1132" y="544">image_vector, caption_vector</text>
+
+  <rect class="note" x="1080" y="650" width="280" height="116" rx="12"/>
+  <text class="text small" x="1102" y="684">Build DB in /tmp first</text>
+  <text class="text tiny" x="1102" y="712">then copy to Modal Volume</text>
+  <text class="text tiny" x="1102" y="738">avoids Volume rename issue</text>
+
+  <rect class="box box-blue" x="760" y="682" width="250" height="132" rx="12"/>
+  <text class="text label" x="786" y="722">Modal Web</text>
+  <text class="text small" x="786" y="754">/search_text</text>
+  <text class="text small" x="786" y="782">/search_images</text>
+  <text class="text small" x="786" y="810">/search_all</text>
+
+  <rect class="box box-green" x="400" y="674" width="250" height="142" rx="12"/>
+  <text class="text label" x="424" y="714">Browser UI</text>
+  <text class="text small" x="424" y="746">query box</text>
+  <text class="text tiny" x="424" y="774">text snippets + image cards</text>
+  <text class="text tiny" x="424" y="798">/image/{image_id}</text>
+
+  <path class="line" d="M 320 204 C 350 202, 370 202, 400 204"/>
+  <path class="line" d="M 690 206 C 720 206, 730 206, 760 206"/>
+  <path class="line" d="M 1040 206 C 1070 206, 1082 206, 1110 206"/>
+
+  <path class="line" d="M 320 494 C 350 494, 370 494, 400 494"/>
+  <path class="line" d="M 690 504 C 720 504, 730 504, 760 504"/>
+  <path class="line" d="M 1040 504 C 1070 504, 1082 504, 1110 504"/>
+
+  <path class="line" d="M 1218 286 C 1220 350, 1220 380, 1218 420"/>
+  <path class="line" d="M 1130 586 C 1070 650, 1038 678, 1010 720"/>
+  <path class="line" d="M 760 748 C 720 748, 690 748, 650 748"/>
+  <path class="line" d="M 1110 500 C 1070 570, 1038 632, 990 682"/>
+  <path class="line" d="M 1110 208 C 1050 430, 1018 580, 958 682"/>
+
+  <path class="line dash" d="M 525 674 C 560 628, 584 606, 610 586"/>
+  <text class="text tiny" x="84" y="842">Demo scale: small limits for cost control; same pipeline scales by increasing records, actors, and GPUs.</text>
+</svg>
