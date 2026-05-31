@@ -31,7 +31,6 @@ import ray.data
 from PIL import Image
 from sentence_transformers import SentenceTransformer
 
-
 INPUT_PATH = "data/coco_dog_sample.parquet"
 DB_PATH = "data/lancedb_ray_images"
 TABLE_NAME = "image_documents"

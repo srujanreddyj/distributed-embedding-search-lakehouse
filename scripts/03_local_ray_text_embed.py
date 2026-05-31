@@ -1,19 +1,19 @@
-""" 
+"""
 Local Ray Data text embedding pipeline.
 
-This script proves the distributed batch inference pattern locally before we move the same idea to Modal. 
-It reads the FineWeb-Edu sample parquet file with Ray Data , embeds text in batches using a stateful actor, 
+This script proves the distributed batch inference pattern locally before we move the same idea to Modal.
+It reads the FineWeb-Edu sample parquet file with Ray Data , embeds text in batches using a stateful actor,
 write vectors to LanceDb, and records simple throughput metrics
 
-The key design choice is using a callable class with Ray Data `map_batches`. 
+The key design choice is using a callable class with Ray Data `map_batches`.
 Ray executes callable classes as stateful actors, which lets each actor load the embedding load the embedding model once and reuse it across many batches
 
 """
 
 import json
-import time 
+import time
 from pathlib import Path
-from typing import Any 
+from typing import Any
 
 import lancedb
 import numpy as np
@@ -21,26 +21,26 @@ import ray
 import ray.data
 from sentence_transformers import SentenceTransformer
 
-
 INPUT_PATH = "data/fineweb-edu-sample.parquet"
 DB_PATH = "data/lancedb_ray"
 TABLE_NAME = "text_documents"
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 METRICS_PATH = Path("data/metrics_local_ray_text.json")
 
+
 class TextEmbedderActor:
-    """ 
+    """
     Stateful Ray Actor that owns one embedding model instance.
 
     Ray creates actor instances from this callable class when it is passed to `map_batches`.
     The model is loaded in `__init__`, so it is reused across many batches instead of being reloaded for every batch
     """
 
-    def __init__(self, model_name, str = MODEL_NAME) -> None:
+    def __init__(self, model_name, str=MODEL_NAME) -> None:
         """
         Load the sentence-transformer model once per actor
         Args:
-            model_name: Hugging Face model ID for the text embedding model. 
+            model_name: Hugging Face model ID for the text embedding model.
         """
 
         self.model = SentenceTransformer(model_name)
@@ -48,14 +48,14 @@ class TextEmbedderActor:
     def __call__(self, batch: dict[str, np.ndarray]) -> dict[str, Any]:
         """
         Embed one Ray Data Batch.
-        Args: 
+        Args:
             batch: A batch of records in NumPy format. Each column is represented as a NumPy array.
 
         Returns:
             the original batch with a new `text_vector` column containing float32 embeding vectors.
         """
 
-        # keep the same text cap as sample creation so local and remote runs are 
+        # keep the same text cap as sample creation so local and remote runs are
         # comparable and very long documents do not dominate runtime.
         texts = [str(value)[:2_000] for value in batch["text"]]
 
@@ -66,7 +66,7 @@ class TextEmbedderActor:
             show_progress_bar=False,
         )
 
-        batch['text_vector'] = vectors.astype("float32").tolist()
+        batch["text_vector"] = vectors.astype("float32").tolist()
         return batch
 
 
@@ -75,7 +75,7 @@ def main(actor_count: int = 2, batch_size: int = 128) -> None:
     Ray local Text embedding and write results to lancedb
 
     Args:
-        actor_count: Number of Ray actors to use locally. On a laptop this should stay small 
+        actor_count: Number of Ray actors to use locally. On a laptop this should stay small
             because each actor loads its own model copy.
         batch_size: Number of records Ray sends to the actor per call.
     """
@@ -89,7 +89,7 @@ def main(actor_count: int = 2, batch_size: int = 128) -> None:
 
     print("Embedding text with Ray stateful actors....")
     embedded = dataset.map_batches(
-        TextEmbedderActor, 
+        TextEmbedderActor,
         fn_constructor_args=(MODEL_NAME,),
         batch_format="numpy",
         batch_size=batch_size,
@@ -99,15 +99,11 @@ def main(actor_count: int = 2, batch_size: int = 128) -> None:
     print("collecting embedding rows....")
 
     df = embedded.to_pandas()
-    
+
     print("Writing Ray output to LanceDb...")
     db = lancedb.connect(DB_PATH)
 
-    db.create_table(
-        TABLE_NAME,
-        data=df.to_dict("records"),
-        mode="overwrite"
-    )
+    db.create_table(TABLE_NAME, data=df.to_dict("records"), mode="overwrite")
 
     elapsed = time.time() - start
 

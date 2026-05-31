@@ -25,7 +25,6 @@ import pandas as pd
 from PIL import Image
 from sentence_transformers import SentenceTransformer
 
-
 INPUT_PATH = Path("data/coco_dog_sample.parquet")
 DB_PATH = Path("data/lancedb_images")
 TABLE_NAME = "image_documents"
@@ -97,10 +96,14 @@ def main(limit: int = 100) -> None:
 
     # For text-to-image search, embed the text query with the same CLIP model
     # and search against the image vector column.
-    query_vector = model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    query_vector = (
+        model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     print(f"\nText-to-image query: {query}")
     results = (

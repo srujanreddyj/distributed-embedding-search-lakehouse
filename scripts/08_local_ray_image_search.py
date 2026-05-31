@@ -1,9 +1,9 @@
 """Search the local Ray-built LanceDb image table.
 
-This script validates that the Ray image embedding pipeline produced a usable lanceDB table. 
-It embeds a text query with the same CLIP-style model and searches against the `image_vector` column to retrieve matching images. 
+This script validates that the Ray image embedding pipeline produced a usable lanceDB table.
+It embeds a text query with the same CLIP-style model and searches against the `image_vector` column to retrieve matching images.
 
-This i the local version of the future Modal search endpoint. 
+This i the local version of the future Modal search endpoint.
 """
 
 from pathlib import Path
@@ -15,6 +15,7 @@ from sentence_transformers import SentenceTransformer
 DB_PATH = Path("data/lancedb_ray_images")
 TABLE_NAME = "image_documents"
 MODEL_NAME = "clip-ViT-B-32"
+
 
 def main(query: str = "a dog sleeping under a blanket", k: int = 5) -> None:
     """Run text-to-image search against the Ray-generated image table.
@@ -29,15 +30,19 @@ def main(query: str = "a dog sleeping under a blanket", k: int = 5) -> None:
     table = db.open_table(TABLE_NAME)
 
     print("Loading CLIP-style query model....")
-    # CLIP maps text and images into a shared embedding space. 
+    # CLIP maps text and images into a shared embedding space.
     # We embed the text query and compare it against stored image vectors.
     model = SentenceTransformer(MODEL_NAME)
 
     print(f"Embedding query: {query}")
-    query_vector = model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    query_vector = (
+        model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     print("Searching image vectors...")
     results = (

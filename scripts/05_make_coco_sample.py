@@ -17,11 +17,11 @@ from typing import Any
 import pandas as pd
 from datasets import load_dataset
 
-
 DATASET_NAME = "ArkaMukherjee/coco_dog_images_with_captions"
 SPLIT = "train"
 IMAGE_DIR = Path("data/coco_dog_images")
 OUTPUT_PATH = Path("data/coco_dog_sample.parquet")
+
 
 def clean_caption(caption: str) -> str:
     """Normalize a caption string for storage and embedding.

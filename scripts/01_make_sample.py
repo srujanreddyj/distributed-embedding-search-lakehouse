@@ -30,6 +30,7 @@ def clean_text(text: str, max_chars: int = 2_000) -> str:
     text = " ".join(text.split())
     return text[:max_chars]
 
+
 def main(limit: int = 2_000) -> None:
     load_local_env()
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -53,18 +54,21 @@ def main(limit: int = 2_000) -> None:
         if len(text.split()) < 30:
             continue
 
-        rows.append({
-            "id": str(idx),
-            "text": text,
-            "url": row.get("url", ""),
-            "token_count": int(row.get("token_count") or 0),
-            "source": "fineweb-edu/sample-10BT",
-        })
+        rows.append(
+            {
+                "id": str(idx),
+                "text": text,
+                "url": row.get("url", ""),
+                "token_count": int(row.get("token_count") or 0),
+                "source": "fineweb-edu/sample-10BT",
+            }
+        )
 
     df = pd.DataFrame(rows)
     df.to_parquet(OUTPUT_PATH, index=False)
     print(f"Saved {len(df)} rows to {OUTPUT_PATH}")
     os._exit(0)
+
 
 if __name__ == "__main__":
     files_pulled = main()

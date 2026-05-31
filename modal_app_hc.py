@@ -22,23 +22,21 @@ DATA_DIR = "/data"
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
-image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "ray[data]>=2.40.0",
-        "datasets>=2.20.0",
-        "sentence-transformers>=3.0.0",
-        "lancedb>=0.17.0",
-        "pyarrow>=15.0.0",
-        "pandas>=2.0.0",
-        "numpy>=1.26.0",
-        "fastapi[standard]",
-        "Pillow>=10.0.0",
-        "torch",
-    )
+image = modal.Image.debian_slim(python_version="3.11").pip_install(
+    "ray[data]>=2.40.0",
+    "datasets>=2.20.0",
+    "sentence-transformers>=3.0.0",
+    "lancedb>=0.17.0",
+    "pyarrow>=15.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.26.0",
+    "fastapi[standard]",
+    "Pillow>=10.0.0",
+    "torch",
 )
 
 app = modal.App(APP_NAME, image=image)
+
 
 @app.function(
     cpu=2,
@@ -85,7 +83,7 @@ def health_check():
 
 
 @app.function(
-    gpu='L4',
+    gpu="L4",
     cpu=2,
     memory=8192,
     timeout=600,
@@ -111,7 +109,9 @@ def gpu_smoke_test():
 
     model = SentenceTransformer("clip-ViT-B-32", device=device)
 
-    vectors = model.encode(prompts, batch_size=3, normalize_embeddings=True, show_progress_bar=True)
+    vectors = model.encode(
+        prompts, batch_size=3, normalize_embeddings=True, show_progress_bar=True
+    )
 
     return {
         "cuda_available": cuda_available,
@@ -120,6 +120,7 @@ def gpu_smoke_test():
         "prompt_count": len(prompts),
         "embedding_shape": list(vectors.shape),
     }
+
 
 @app.local_entrypoint()
 def main() -> None:

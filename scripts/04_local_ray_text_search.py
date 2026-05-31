@@ -12,7 +12,6 @@ from pathlib import Path
 import lancedb
 from sentence_transformers import SentenceTransformer
 
-
 DB_PATH = Path("data/lancedb_ray")
 TABLE_NAME = "text_documents"
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
@@ -35,10 +34,14 @@ def main(query: str = "What is machine learning?", k: int = 5) -> None:
     model = SentenceTransformer(MODEL_NAME)
 
     print(f"Embedding query: {query}")
-    query_vector = model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    query_vector = (
+        model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     print("Searching...")
     results = (

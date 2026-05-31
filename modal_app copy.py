@@ -30,23 +30,21 @@ DATA_DIR = "/data"
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
-image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "ray[data]>=2.40.0",
-        "datasets>=2.20.0",
-        "sentence-transformers>=3.0.0",
-        "lancedb>=0.17.0",
-        "pyarrow>=15.0.0",
-        "pandas>=2.0.0",
-        "numpy>=1.26.0",
-        "fastapi[standard]",
-        "Pillow>=10.0.0",
-        "torch",
-    )
+image = modal.Image.debian_slim(python_version="3.11").pip_install(
+    "ray[data]>=2.40.0",
+    "datasets>=2.20.0",
+    "sentence-transformers>=3.0.0",
+    "lancedb>=0.17.0",
+    "pyarrow>=15.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.26.0",
+    "fastapi[standard]",
+    "Pillow>=10.0.0",
+    "torch",
 )
 
 app = modal.App(APP_NAME, image=image)
+
 
 @app.function(
     cpu=2,
@@ -93,7 +91,7 @@ def health_check():
 
 
 @app.function(
-    gpu='L4',
+    gpu="L4",
     cpu=2,
     memory=8192,
     timeout=600,
@@ -120,7 +118,9 @@ def gpu_smoke_test():
 
     model = SentenceTransformer("clip-ViT-B-32", device=device)
 
-    vectors = model.encode(prompts, batch_size=3, normalize_embeddings=True, show_progress_bar=True)
+    vectors = model.encode(
+        prompts, batch_size=3, normalize_embeddings=True, show_progress_bar=True
+    )
 
     return {
         "cuda_available": cuda_available,
@@ -130,18 +130,19 @@ def gpu_smoke_test():
         "embedding_shape": list(vectors.shape),
     }
 
+
 @app.function(
-    gpu='L4',
+    gpu="L4",
     cpu=2,
     memory=16_384,
     timeout=60 * 30,
     volumes={DATA_DIR: volume},
     secrets=[modal.Secret.from_name("hf-token")],
 )
-def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
+def build_image_table(limit: int = 100, batch_size: int = 32) -> dict:
     """Build the image LanceDB table on MOdal using Ray and a GPU.
 
-    This function streams a small COCO image-caption sample, saves images to the Modal Volume, 
+    This function streams a small COCO image-caption sample, saves images to the Modal Volume,
     embedss images and captions with a CLIP-style model through Ray Data, and writes the results to LanceDB.
 
     Args:
@@ -153,7 +154,7 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
     import shutil
     from pathlib import Path
     from typing import Any
-    
+
     import lancedb
     import numpy as np
     import pandas as pd
@@ -167,7 +168,7 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
 
     dataset_name = "Multimodal-Fatima/COCO_captions_train"
     split = "train"
-    
+
     model_name = "sentence-transformers/clip-ViT-B-32"
 
     base_dir = Path(DATA_DIR)
@@ -189,7 +190,9 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
         if idx >= limit:
             break
 
-        captions = [str(c).strip() for c in row.get("sentences_raw", []) if str(c).strip()]
+        captions = [
+            str(c).strip() for c in row.get("sentences_raw", []) if str(c).strip()
+        ]
 
         if not captions:
             continue
@@ -227,7 +230,7 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
 
     class ImageEmbedderActor:
         """Stateful Ray actor that owns one GPU-backed CLIP model."""
-        
+
         def __init__(self, model_name: str) -> None:
             """Load the CLIP-style model once per actor on CUDA."""
             self.model = SentenceTransformer(model_name, device="cuda")
@@ -236,11 +239,11 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
         def load_rgb_image(image_path: str) -> Image.Image:
             """Load one image from the modal volume as RGB."""
             return Image.open(image_path).convert("RGB")
-            
+
         def __call__(self, batch: dict[str, np.ndarray]) -> dict[str, Any]:
             """embed one batch of image-caption rows."""
             image_paths = [str(path) for path in batch["image_path"]]
-            captions = [str(caption) for caption in batch['caption']]
+            captions = [str(caption) for caption in batch["caption"]]
 
             images = [self.load_rgb_image(path) for path in image_paths]
 
@@ -279,23 +282,21 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
 
     print("Writing image_documents table to temporary local LanceDB path...")
 
-    # Lancedb uses filesystem commit operations such as atomic rename. 
+    # Lancedb uses filesystem commit operations such as atomic rename.
     # Modal Volume is persistent, but it does not behave exactly like noraml local disk for every filesystem operation.
-    # Build the table on ephemeral container disk first. 
+    # Build the table on ephemeral container disk first.
 
     if local_db_path.exists():
         shutil.rmtree(local_db_path)
 
     db = lancedb.connect(str(local_db_path))
     db.create_table(
-        "image_documents",
-        data=embedded_df.to_dict("records"),
-        mode="overwrite"
+        "image_documents", data=embedded_df.to_dict("records"), mode="overwrite"
     )
 
     print("Copying finished LanceDB directory to Modal Volume...")
 
-    # Copy the completed lancedb artifact into the persistent modal volume. 
+    # Copy the completed lancedb artifact into the persistent modal volume.
     # The search endpoint will read from this Volume path later.
 
     if volume_db_path.exists():
@@ -331,16 +332,16 @@ def build_image_table(limit: int=100, batch_size: int = 32) -> dict:
     memory=8192,
     timeout=300,
     volumes={DATA_DIR: volume},
-    secrets=[modal.Secret.from_name("hf-token")]
+    secrets=[modal.Secret.from_name("hf-token")],
 )
 @modal.fastapi_endpoint(method="POST")
 def search_images(item: dict) -> dict:
     """Search persisted image embeddings with a text query
 
     This endpoint is the serving counterpart to `build_image_table`.
-    The batch job write `image_documents` into LanceDB on the Modal volume; this function 
+    The batch job write `image_documents` into LanceDB on the Modal volume; this function
     reloads the Volume, embeds the user's text query with the same CLIP model,
-    and searches against the stored `image_vector` column. 
+    and searches against the stored `image_vector` column.
     Args:
         item: JSON request body with `query` and optional `k`.
 
@@ -357,7 +358,7 @@ def search_images(item: dict) -> dict:
     # Pull the latest committed Volume state so this endpoint can see the table created by the batch function.
     volume.reload()
     query = str(item.get("query", "")).strip()
-    k = int(item.get('k', 5))
+    k = int(item.get("k", 5))
 
     if not query:
         return {"error": "Please provide a non-empty query."}
@@ -372,10 +373,14 @@ def search_images(item: dict) -> dict:
     # search, embed the query text and compare it to stored image vectors.
     model = SentenceTransformer(model_name)
 
-    query_vector = model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    query_vector = (
+        model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     results = (
         table.search(query_vector, vector_column_name="image_vector")
@@ -407,7 +412,7 @@ def search_images(item: dict) -> dict:
 
 
 @app.function(
-    gpu='L4',
+    gpu="L4",
     cpu=2,
     memory=16_384,
     volumes={DATA_DIR: volume},
@@ -455,7 +460,6 @@ def build_text_table(limit: int = 500, batch_size: int = 128) -> dict:
     local_db_path = Path("/tmp/lancedb_text_build")
     volume_db_path = base_dir / "lancedb_text"
 
-
     def clean_text(text: str, max_chars: int = 2_000) -> str:
         """Normalize whitespace and cap long documents for stable demo runtime
 
@@ -471,7 +475,7 @@ def build_text_table(limit: int = 500, batch_size: int = 128) -> dict:
     print(f"Streaming {limit} text records from FineWeb-Edu....")
 
     dataset = load_dataset(
-        dataset_name, 
+        dataset_name,
         name=dataset_config,
         split=split,
         streaming=True,
@@ -554,7 +558,7 @@ def build_text_table(limit: int = 500, batch_size: int = 128) -> dict:
 
     if volume_db_path.exists():
         shutil.rmtree(volume_db_path)
-    
+
     shutil.copytree(local_db_path, volume_db_path)
 
     elapsed = time.time() - start
@@ -628,10 +632,14 @@ def search_text(item: dict) -> dict:
     # in the same vector space.
     model = SentenceTransformer(model_name)
 
-    query_vector = model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    query_vector = (
+        model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     results = (
         table.search(query_vector, vector_column_name="text_vector")
@@ -658,7 +666,6 @@ def search_text(item: dict) -> dict:
         "k": k,
         "matches": matches,
     }
-
 
 
 @app.function(
@@ -707,10 +714,14 @@ def search_all(item: dict) -> dict:
 
     # Text search uses the same MiniLM model used to embed FineWeb-Edu records.
     text_model = SentenceTransformer(text_model_name)
-    text_query_vector = text_model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    text_query_vector = (
+        text_model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     text_results = (
         text_table.search(text_query_vector, vector_column_name="text_vector")
@@ -732,13 +743,17 @@ def search_all(item: dict) -> dict:
             }
         )
 
-    # Image search uses CLIP's text encode, then compares the query vector 
+    # Image search uses CLIP's text encode, then compares the query vector
     # to stored image vector
     image_model = SentenceTransformer(image_model_name)
-    image_query_vector = image_model.encode(
-        [query],
-        normalize_embeddings=True,
-    )[0].astype("float32").tolist()
+    image_query_vector = (
+        image_model.encode(
+            [query],
+            normalize_embeddings=True,
+        )[0]
+        .astype("float32")
+        .tolist()
+    )
 
     image_results = (
         image_table.search(image_query_vector, vector_column_name="image_vector")
@@ -772,7 +787,6 @@ def search_all(item: dict) -> dict:
             "different embedding models and distance scales."
         ),
     }
-
 
 
 @app.local_entrypoint()

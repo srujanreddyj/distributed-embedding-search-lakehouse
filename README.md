@@ -1,143 +1,143 @@
-# Serverless Multimodal Lakehouse Search with Ray, Modal, and LanceDB
+# Serverless Multimodal Data Lakehouse
 
-This project is a demo-scale multimodal lakehouse search system. It embeds both educational text documents and image-caption records, stores vectors and metadata in LanceDB, and exposes Modal endpoints for semantic search.
+A demo-scale multimodal data lakehouse built with Ray Data, Modal, LanceDB, and Hugging Face datasets.
 
-The goal is to demonstrate the architecture and trade-offs behind distributed AI data pipelines:
+The project started as a semantic search demo for FineWeb-Edu text and COCO images. It now extends that spine into a 12-component training-data pipeline: ingestion, content-addressed storage, preprocessing, quality gates, embedding caches, cataloging, dataset versioning, WebDataset-style materialization, loader benchmarking, evaluation feedback, hybrid precompute decisions, and provenance.
 
-- Ray Data for batch inference.
-- Modal for serverless GPU execution.
-- LanceDB for vector storage and semantic retrieval.
-- FineWeb-Edu for educational text search.
-- COCO image-caption data for text-to-image search.
+This is intentionally not a production data lake. It is a portfolio/interview project that shows the engineering pattern behind distributed AI data pipelines without requiring full web-scale data or a permanent GPU cluster.
 
 ## Architecture
 
 ![Hand-drawn architecture diagram](assets/architecture-handdrawn.svg)
 
-```text
-FineWeb-Edu text sample
-        ↓
-Text embedding model
-        ↓
-Ray Data batch inference
-        ↓
-LanceDB text_documents table
+Detailed diagrams:
 
+- [Mermaid architecture](MULTIMODAL_TRAINING_DATA_ARCHITECTURE.md)
+- [Excalidraw architecture](assets/multimodal-training-data-pipeline.excalidraw)
+- [Ray preprocessing scaling notes](docs/RAY_PREPROCESSING_SCALING.md)
 
-COCO image-caption sample
-        ↓
-CLIP/OpenCLIP-style embedding model
-        ↓
-Ray Data batch inference
-        ↓
-LanceDB image_documents table
+The expanded pipeline has 12 components:
 
+| # | Component | Purpose |
+| ---: | --- | --- |
+| 1 | Source Connectors | Ingest FineWeb-Edu text, COCO images, FineVideo mp4-backed video clips, and LibriSpeech audio from Hugging Face. |
+| 2 | Content-Addressed Store | Store raw assets by SHA256 hash using a two-level prefix layout. |
+| 3 | Preprocessing Engine | Run Ray Data `map_batches` with stateful actors per modality. |
+| 4 | Quality / Dedup / Safety | Apply exact hash dedup, rule checks, FAISS ANN near-dedup, and safety classifiers. |
+| 5 | Embedding Service | Precompute and cache embeddings keyed by content hash with model version stamping. |
+| 6 | Metadata Catalog | Keep vectors and rich metadata in LanceDB tables. |
+| 7 | Dataset Versioning | Write immutable JSON manifests that reference CAS hashes and transform specs. |
+| 8 | Materialization | Pack version manifests into WebDataset tar shards for sequential streaming. |
+| 9 | Training Loader | Stream shards with prefetch, deterministic shuffle, and mid-epoch resume. |
+| 10 | Eval & Feedback Loop | Pin dataset versions, run evals, compare metrics, and generate datasheets. |
+| 11 | Precompute vs On-the-Fly | Precompute deterministic transforms and leave cheap augmentations in the loader. |
+| 12 | Provenance / Observability | Track per-item license, source chain, OpenLineage events, and dashboard metrics. |
 
-Modal endpoint
-        ↓
-/search_text
-/search_images
-/search_all
-browser UI
-```
+Demo scale target: `10K` records, roughly `$0.15` total GPU cost.
 
-## Why This Project Exists
+## Data Sources
 
-This is not production-grade and does not try to process full web-scale datasets. It is a portfolio/interview project designed to show the engineering pattern behind multimodal embedding pipelines: batch inference, GPU execution, vector storage, and semantic retrieval.
+| Modality | Dataset | Model path |
+| --- | --- | --- |
+| Text | FineWeb-Edu sample | `sentence-transformers/all-MiniLM-L6-v2` |
+| Image | COCO captions | `openai/clip-vit-base-patch32` |
+| Video | FineVideo | CLIP keyframe embeddings |
+| Audio | LibriSpeech | Whisper encoder features, projected for retrieval/training metadata |
 
-I initially considered a text-only embedding pipeline, but at demo scale that can make Ray and Modal feel over-engineered. Adding images makes the workload more realistic because image decoding, CLIP preprocessing, GPU inference, and multimodal retrieval are heavier than text-only embedding.
-
-## Storage Design
-
-The project uses two LanceDB tables.
-
-### `text_documents`
+## Repository Layout
 
 ```text
-id
-text
-url
-source
-token_count
-text_vector
+distributed-embedding-search-lakehouse/
+├── modal_app.py                         # Modal GPU jobs, search endpoints, browser UI
+├── src/
+│   ├── cas.py                           # Content-addressed storage
+│   ├── catalog.py                       # LanceDB metadata catalog
+│   ├── connectors/                      # Hugging Face source connectors
+│   ├── preprocessing/                   # Ray Data actor preprocessors
+│   ├── quality.py                       # Rule-based quality gates
+│   ├── dedup.py                         # FAISS near-duplicate filtering
+│   ├── embedding_service.py             # Embedding cache service
+│   ├── versioning.py                    # Immutable dataset manifests
+│   ├── sharding.py                      # WebDataset-style tar materialization
+│   └── loader_benchmark.py              # Streaming shard benchmark
+├── scripts/
+│   ├── 000_run_connectors.py
+│   ├── 001_run_preprocessing.py
+│   ├── 002_filter_and_dedup.py
+│   ├── 003_build_catalog.py
+│   ├── 004_create_version.py
+│   ├── 005_materialize_shards.py
+│   ├── 006_loader_benchmark.py
+│   ├── 007_compare_versions.py
+│   ├── 008_precompute_assets.py
+│   └── 009_tag_licenses.py
+├── static/index.html                    # Modal-hosted search UI
+├── assets/
+└── data/                                # Local generated artifacts, ignored in normal use
 ```
 
-### `image_documents`
+## Setup
 
-```text
-image_id
-image_path_or_url
-caption
-source
-split
-image_vector
-caption_vector
-```
-
-## Endpoint Design
-
-### `/search_text`
-
-Search text documents by semantic meaning.
-
-```json
-{
-  "query": "What is reinforcement learning?",
-  "k": 5
-}
-```
-
-### `/search_images`
-
-Use a text query to retrieve matching images and captions.
-
-```json
-{
-  "query": "a dog playing in a grassy field",
-  "k": 5
-}
-```
-
-### `/search_all`
-
-Search both text and image tables from one query.
-
-```json
-{
-  "query": "children playing soccer outside",
-  "k": 5
-}
-```
-
-### Browser UI
-
-The Modal app also serves a small browser UI. It calls `/api/search_all`, renders FineWeb-Edu text matches beside COCO image matches, and serves persisted COCO images through `/image/{image_id}`.
-
-Images are served through Modal because stored paths like `/data/coco_images/...` are internal Modal Volume paths and are not directly accessible by a browser.
-
-## Execution Order
-
-1. Finish local FineWeb-Edu sample extraction.
-2. Build local LanceDB text smoke test.
-3. Build local Ray text embedding pipeline.
-4. Add COCO image-caption sample extraction.
-5. Build local CLIP/OpenCLIP-style image embedding smoke test.
-6. Build local Ray image embedding pipeline.
-7. Move both pipelines into a Modal GPU batch job.
-8. Store both LanceDB tables on a Modal Volume.
-9. Add `/search_text`.
-10. Add `/search_images`.
-11. Add `/search_all`.
-
-## Run And Deploy
-
-Create and activate the local environment:
+Use Python 3.11. The project supports both `uv pip install -r requirements.txt` and the newer `uv add` / `pyproject.toml` workflow.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv venv --python 3.11 --prompt distributed-embedding-search-lakehouse --clear .venv
+uv venv --python 3.11 --prompt distributed-embedding-search-lakehouse --seed
 source .venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install --python .venv/bin/python -r requirements.txt
 ```
+
+If `uv venv` picks a Conda interpreter and editor IntelliSense gets confused, deactivate Conda first:
+
+```bash
+conda deactivate
+uv venv --python 3.11 --prompt distributed-embedding-search-lakehouse --seed
+```
+
+For FAISS, install `faiss-cpu`, not `faiss`. The import name in Python is still `faiss`:
+
+```bash
+uv add faiss-cpu torch transformers soundfile librosa
+uv run python -c "import faiss, torch, transformers, soundfile, librosa; print('ok')"
+```
+
+## Local Search Demo
+
+These scripts exercise the original text and image semantic search pipeline locally:
+
+```bash
+python scripts/01_make_sample.py
+python scripts/02_local_lancedb_text_smoke_test.py
+python scripts/03_local_ray_text_embed.py
+python scripts/04_local_ray_text_search.py
+
+python scripts/05_make_coco_sample.py
+python scripts/06_local_lancedb_image_smoke_test.py
+python scripts/07_local_ray_image_embed.py
+python scripts/08_local_ray_image_search.py
+```
+
+Expected outputs include local parquet samples, LanceDB tables under `data/`, and metrics JSON files.
+
+## Training Data Pipeline
+
+The newer 12-component pipeline is organized as a numbered runbook:
+
+```bash
+python scripts/000_run_connectors.py
+python scripts/001_run_preprocessing.py
+python scripts/002_filter_and_dedup.py
+python scripts/003_build_catalog.py
+python scripts/004_create_version.py
+python scripts/005_materialize_shards.py
+python scripts/006_loader_benchmark.py
+python scripts/007_compare_versions.py
+python scripts/008_precompute_assets.py
+python scripts/009_tag_licenses.py
+```
+
+This layer is still being wired into the proven text/image demo. Some components are scaffolding for the final architecture, especially the video/audio paths, safety classifiers, version comparison, and observability hooks.
+
+## Modal GPU Run
 
 Authenticate Modal:
 
@@ -152,26 +152,31 @@ Create the Hugging Face secret used by Modal functions:
 modal secret create hf-token HF_TOKEN=your_hf_token_here
 ```
 
-Run local validation scripts:
-
-```bash
-python scripts/01_make_sample.py
-python scripts/02_local_lancedb_text_smoke_test.py
-python scripts/03_local_ray_text_embed.py
-python scripts/04_local_ray_text_search.py
-python scripts/05_make_coco_sample.py
-python scripts/06_local_lancedb_image_smoke_test.py
-python scripts/07_local_ray_image_embed.py
-python scripts/08_local_ray_image_search.py
-```
-
-Run Modal health checks and batch jobs:
+Run health checks and batch jobs:
 
 ```bash
 modal run modal_app.py
 ```
 
-Serve the app temporarily during development:
+The Modal app keeps serving and orchestration in one deployment surface while
+leaving reusable pipeline logic in `src/` and `scripts/`. The expanded pipeline
+entry points are:
+
+| Modal function | Pipeline stage |
+| --- | --- |
+| `run_connectors` | Source connectors and CAS ingestion |
+| `run_preprocessing` | Ray Data preprocessing actors |
+| `run_quality_dedup` | Quality gates and FAISS near-dedup |
+| `build_catalog` | LanceDB metadata catalog |
+| `create_dataset_version` | Immutable dataset manifest |
+| `materialize_shards` | WebDataset-style tar shards |
+| `benchmark_loader` | Streaming loader benchmark |
+| `compare_dataset_versions` | Version comparison |
+| `precompute_assets` | Deterministic precompute stage |
+| `tag_licenses` | License/source tagging |
+| `pipeline_status` | Modal Volume artifact status |
+
+Serve during development:
 
 ```bash
 modal serve modal_app.py
@@ -183,23 +188,26 @@ Deploy persistent endpoints and the browser UI:
 modal deploy modal_app.py
 ```
 
-Test the deployed endpoints:
+The deployed app exposes:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/search_text` | Query FineWeb-Edu text vectors. |
+| `/search_images` | Query COCO image vectors with text. |
+| `/search_all` | Search text and image tables from one request. |
+| `/api/search_all` | Browser UI API wrapper. |
+| `/api/pipeline_status` | Browser UI pipeline artifact status. |
+| `/image/{image_id}` | Serve persisted demo images from Modal Volume. |
+
+Example request:
 
 ```bash
-curl -X POST "YOUR_SEARCH_TEXT_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is reinforcement learning?", "k": 5}'
-
-curl -X POST "YOUR_SEARCH_IMAGES_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "a woman cutting a cake", "k": 5}'
-
 curl -X POST "YOUR_SEARCH_ALL_URL" \
   -H "Content-Type: application/json" \
   -d '{"query": "children playing outside", "k": 3}'
 ```
 
-Open the deployed browser UI URL printed by Modal and try:
+Good demo queries:
 
 ```text
 a woman cutting a cake
@@ -207,44 +215,7 @@ children playing outside
 people riding horses
 ```
 
-## Interview Talking Points
-
-- The first tiny runs are correctness checks, not proof that Ray is required. At `500` text records and `100` images, a single process can handle the workload.
-- Ray is included to preserve the production batch-inference shape: partitioned reads, `map_batches`, and stateful actors that load models once and process many batches.
-- Modal provides ephemeral GPU execution without managing EC2, Kubernetes, or a persistent Ray cluster.
-- LanceDB stores vectors and metadata together, which fits a lakehouse-style retrieval workflow.
-- Image embedding makes the infrastructure more defensible than a text-only demo because image decoding, CLIP preprocessing, and GPU inference are heavier.
-- Text and image results are returned as separate ranked lists because MiniLM and CLIP distances are not calibrated against each other.
-- LanceDB is built under `/tmp` inside the Modal container and then copied to Modal Volume because direct LanceDB writes to the Volume hit filesystem rename limitations.
-- The browser UI serves images through `/image/{image_id}` because `/data/...` paths are internal Modal Volume paths, not public URLs.
-
-## Known Limitations
-
-- The current indexed datasets are intentionally small, so result quality is sample-limited.
-- The reported metrics are demo-scale validation metrics, not production benchmarks.
-- The app loads embedding models inside endpoint containers, so cold starts can be slow.
-- Text and image tables are stored in separate LanceDB roots for simplicity.
-- There is no authentication, authorization, rate limiting, monitoring dashboard, retry queue, or production observability.
-- There is no production indexing strategy or recall/latency tuning.
-- Images are served from Modal Volume for demo convenience; production media delivery would usually use object storage and a CDN.
-- The project does not process full FineWeb-Edu or full COCO.
-
-## Current Status
-
-- [x] Python 3.11 virtual environment with `uv`
-- [x] Project scaffold
-- [x] FineWeb-Edu local sample extraction
-- [x] Local LanceDB text smoke test
-- [x] Local Ray text embedding pipeline
-- [x] COCO image-caption sample extraction
-- [x] Local image embedding smoke test
-- [x] Local Ray image embedding pipeline
-- [x] Modal GPU image batch job
-- [x] Modal `/search_images` endpoint
-- [x] Modal text batch job
-- [x] Modal `/search_text` endpoint
-- [x] Modal `/search_all` endpoint
-- [x] Modal-hosted browser UI
+Text and image results are intentionally returned as separate ranked lists because MiniLM and CLIP distances are not directly calibrated.
 
 ## Current Metrics
 
@@ -261,118 +232,31 @@ people riding horses
 | Modal image portfolio run | 5,000 | L4 | 1 | 32 | 72.10 sec | 69.34 | - |
 | Modal text portfolio run | 25,000 | L4 | 1 | 128 | 52.89 sec | 472.71 | - |
 
-The larger scale-check run shows why tiny smoke-test metrics can be misleading: fixed overheads like model loading, dataset setup, Ray startup, and Volume writes are amortized over more records as limits increase.
+The larger runs show why tiny smoke-test metrics can be misleading: fixed costs like model loading, Ray startup, dataset setup, and Volume writes are amortized over more records.
 
-## UI Demo
+## Design Notes
 
-The deployed Modal UI provides a search box for multimodal retrieval. A query is sent to `/api/search_all`, then the page renders FineWeb-Edu text snippets beside COCO image-caption matches.
+- Ray Data is included to preserve the production shape: partitioned reads, `map_batches`, and actors that load models once per worker.
+- Modal provides serverless GPU execution without managing EC2, Kubernetes, or a persistent Ray cluster.
+- LanceDB stores vectors and metadata together, which fits a lakehouse-style retrieval workflow.
+- CAS and immutable manifests make dataset versions reproducible without copying large assets.
+- WebDataset-style shards turn many small files into sequential reads that training workers can stream efficiently.
+- The browser UI serves images through `/image/{image_id}` because `/data/...` paths are internal Modal Volume paths, not public URLs.
 
-The UI also exposes image files through:
+## Known Limitations
 
-```text
-/image/{image_id}
-```
-
-This route is necessary because image paths such as `/data/coco_images/coco_000000522418.jpg` exist inside the Modal container/Volume and are not public browser URLs.
-
-Good demo queries:
-
-```text
-a woman cutting a cake
-children playing outside
-people riding horses
-```
-
-Visual success criteria:
-
-- Text results render with snippets and source metadata.
-- Image results render as actual image cards, not broken thumbnails.
-- The page keeps text and image rankings separate.
-
-## Endpoint Evidence
-
-`/search_images` validates the serving path: a text query is embedded with CLIP and searched against persisted image vectors in LanceDB on Modal Volume.
-
-Example query:
-
-```json
-{
-  "query": "a woman cutting a cake",
-  "k": 5
-}
-```
-
-Top result:
-
-```json
-{
-  "image_id": "coco_000000522418",
-  "filename": "COCO_val2014_000000522418.jpg",
-  "caption": "A woman wearing a net on her head cutting a cake.",
-  "distance": 1.3600707054138184
-}
-```
-
-Another query, `"people riding horses"`, returned horse-related matches, including:
-
-```json
-{
-  "image_id": "coco_000000037675",
-  "caption": "Horses graze in front of a large building amid snow.",
-  "distance": 1.4331679344177246
-}
-```
-
-These results are demo-scale retrieval examples, not benchmark claims.
-
-`/search_text` validates the text serving path: a text query is embedded with MiniLM and searched against persisted FineWeb-Edu text vectors in LanceDB on Modal Volume.
-
-Example query:
-
-```json
-{
-  "query": "What is reinforcement learning?",
-  "k": 5
-}
-```
-
-Top result:
-
-```json
-{
-  "id": "21",
-  "url": "http://www.funderstanding.com/category/child-development/brain-child-development/",
-  "source": "HuggingFaceFW/fineweb-edu/sample-10BT",
-  "token_count": 1062,
-  "distance": 1.2111157178878784
-}
-```
-
-The top result discusses learning, motivation, and observational learning. Because this run indexed only 500 sampled documents, the search result proves the endpoint and vector table work, but it should not be treated as a high-quality domain search benchmark for reinforcement learning.
-
-`/search_all` validates the final multimodal serving shape: one query searches both tables and returns separate ranked lists.
-
-Example query:
-
-```json
-{
-  "query": "children playing outside",
-  "k": 3
-}
-```
-
-The endpoint returned `text_matches` from FineWeb-Edu and `image_matches` from COCO captions. The response intentionally includes this note:
-
-```text
-Text and image matches are ranked separately because they use different embedding models and distance scales.
-```
-
-That design avoids pretending MiniLM text distances and CLIP image distances are directly comparable.
+- Indexed datasets are intentionally small, so search quality is sample-limited.
+- The 12-component training-data layer is partly scaffolded and still needs end-to-end hardening.
+- Video and audio paths are included architecturally, but the strongest tested path remains text plus image.
+- Safety classifiers, OpenLineage events, Grafana dashboards, and datasheet generation are design targets rather than fully implemented production services.
+- There is no authentication, authorization, rate limiting, retry queue, or production observability.
+- Modal endpoint cold starts can be slow because embedding models load inside endpoint containers.
 
 ## References
 
-- [LanceDB documentation](https://docs.lancedb.com/)
-- [LanceDB OpenCLIP integration](https://docs.lancedb.com/integrations/embedding/openclip)
-- [COCO Image Captioning dataset on Hugging Face](https://hf.co/datasets/MagiBoss/COCO-Image-Captioning)
-- [Ray Data working with images](https://docs.ray.io/en/master/data/working-with-images.html)
-- [Ray end-to-end multimodal AI workloads](https://docs.ray.io/en/master/ray-overview/examples/e2e-multimodal-ai-workloads/index.html)
+- [Ray Data](https://docs.ray.io/en/latest/data/data.html)
+- [Modal](https://modal.com/docs)
+- [LanceDB](https://docs.lancedb.com/)
+- [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)
+- [COCO Image Captioning dataset](https://huggingface.co/datasets/MagiBoss/COCO-Image-Captioning)
+- [WebDataset](https://github.com/webdataset/webdataset)
