@@ -58,92 +58,89 @@ def _setup():
         (Path(DATA_DIR) / d).mkdir(parents=True, exist_ok=True)
 
 
-@app.function(
-    cpu=4,
-    memory=16_384,
-    timeout=3600,
-    volumes={DATA_DIR: volume},
-    secrets=[modal.Secret.from_name("hf-token")],
-)
-def stage_01_connectors(
-    text_limit: int = 500,
-    image_limit: int = 100,
-    video_limit: int = 50,
-    audio_limit: int = 100,
-) -> dict:
-    """Stage 1-2: Source connectors + CAS ingestion."""
+def _parquet_row_count(path: Path) -> int:
+    import pandas as pd
+
+    return len(pd.read_parquet(path, columns=["id"]))
+
+
+def _existing_artifact_result(path: Path, artifact_type: str) -> dict | None:
+    if not path.exists():
+        return None
+    rows = _parquet_row_count(path)
+    return {
+        "status": "skipped",
+        "reason": f"{artifact_type} already exists",
+        "path": str(path),
+        "rows": rows,
+    }
+
+
+def _run_connector(modality: str, limit: int, force: bool = False) -> dict:
     _setup()
     from src.cas import ContentAddressedStore
     from src.connectors.text import FineWebEduConnector
     from src.connectors.image import COCOCaptionsConnector
     from src.connectors.video import FineVideoConnector
     from src.connectors.audio import LibriSpeechConnector
-    import pandas as pd
 
     data = Path(DATA_DIR)
+    manifest_names = {
+        "text": "fineweb_edu",
+        "image": "coco_captions",
+        "video": "finevideo",
+        "audio": "librispeech",
+    }
+    manifest = data / "manifests" / f"{manifest_names[modality]}_manifest.parquet"
+    if not force:
+        existing = _existing_artifact_result(manifest, "manifest")
+        if existing:
+            return {"modality": modality, **existing}
+
     cas = ContentAddressedStore(root=data / "cas")
-    results = {}
 
-    print("--- Text ---")
-    text_manifest = FineWebEduConnector(output_dir=data / "manifests", cas=None).run(
-        limit=text_limit
-    )
-    results["text"] = len(pd.read_parquet(text_manifest, columns=["id"]))
+    if modality == "text":
+        manifest = FineWebEduConnector(output_dir=data / "manifests", cas=None).run(
+            limit=limit
+        )
+    elif modality == "image":
+        manifest = COCOCaptionsConnector(
+            output_dir=data / "manifests",
+            image_dir=data / "raw" / "images",
+            cas=cas,
+        ).run(limit=limit)
+    elif modality == "video":
+        manifest = FineVideoConnector(
+            output_dir=data / "manifests",
+            video_dir=data / "raw" / "videos",
+            clip_dir=data / "raw" / "video_clips",
+            keyframe_dir=data / "raw" / "keyframes",
+            cas=cas,
+        ).run(limit=limit)
+    elif modality == "audio":
+        manifest = LibriSpeechConnector(
+            output_dir=data / "manifests",
+            audio_dir=data / "raw" / "audio",
+            cas=cas,
+        ).run(limit=limit)
+    else:
+        raise ValueError(f"Unknown modality: {modality}")
 
-    print("--- Image ---")
-    image_manifest = COCOCaptionsConnector(
-        output_dir=data / "manifests",
-        image_dir=data / "raw" / "images",
-        cas=cas,
-    ).run(limit=image_limit)
-    results["image"] = len(pd.read_parquet(image_manifest, columns=["id"]))
-
-    print("--- Video ---")
-    video_manifest = FineVideoConnector(
-        output_dir=data / "manifests",
-        video_dir=data / "raw" / "videos",
-        clip_dir=data / "raw" / "video_clips",
-        keyframe_dir=data / "raw" / "keyframes",
-        cas=cas,
-    ).run(limit=video_limit)
-    results["video"] = len(pd.read_parquet(video_manifest, columns=["id"]))
-
-    print("--- Audio ---")
-    audio_manifest = LibriSpeechConnector(
-        output_dir=data / "manifests",
-        audio_dir=data / "raw" / "audio",
-        cas=cas,
-    ).run(limit=audio_limit)
-    results["audio"] = len(pd.read_parquet(audio_manifest, columns=["id"]))
-
-    volume.commit()
-    return {"stage": "connectors", "status": "ok", "results": results}
+    return {
+        "modality": modality,
+        "status": "ok",
+        "path": str(manifest),
+        "rows": _parquet_row_count(manifest),
+    }
 
 
-@app.function(
-    gpu="L4:2",
-    cpu=8,
-    memory=49_152,
-    timeout=3600,
-    volumes={DATA_DIR: volume},
-    secrets=[modal.Secret.from_name("hf-token")],
-)
-def stage_02_preprocessing() -> dict:
-    """Stage 3: Ray Data preprocessing with stateful actors."""
-    _setup()
-    import time
-    import pandas as pd
-    import ray, ray.data
+def _preprocessing_configs() -> list[dict]:
     from src.preprocessing.text import TextPreprocessor
     from src.preprocessing.image import ImagePreprocessor
     from src.preprocessing.video import VideoPreprocessor
     from src.preprocessing.audio import AudioPreprocessor
 
-    data = Path(DATA_DIR)
-    output_dir = data / "preprocessed"
-    results = {}
-
-    pipelines = [
+    return [
         {
             "modality": "text",
             "manifest_name": "fineweb_edu",
@@ -182,32 +179,71 @@ def stage_02_preprocessing() -> dict:
         },
     ]
 
-    for config in pipelines:
-        modality = config["modality"]
-        manifest_name = config["manifest_name"]
-        manifest = data / "manifests" / f"{manifest_name}_manifest.parquet"
-        if not manifest.exists():
-            print(f"Skipping {modality} — no manifest")
-            continue
-        row_count = len(pd.read_parquet(manifest, columns=["id"]))
-        if row_count == 0:
-            print(f"Skipping {modality} — manifest is empty")
-            results[modality] = {"status": "skipped", "reason": "empty manifest"}
-            continue
 
-        print(f"\n--- {modality.upper()} ---")
+def _preprocess_one_modality(config: dict, force: bool = False) -> dict:
+    _setup()
+    import shutil
+    import time
+    import ray
+    import ray.data
+
+    data = Path(DATA_DIR)
+    output_dir = data / "preprocessed"
+    output_path = output_dir / f"{config['modality']}_embedded.parquet"
+
+    manifest = data / "manifests" / f"{config['manifest_name']}_manifest.parquet"
+    if not manifest.exists():
+        return {
+            "modality": config["modality"],
+            "status": "skipped",
+            "reason": "missing manifest",
+            "manifest": str(manifest),
+        }
+
+    row_count = _parquet_row_count(manifest)
+    if row_count == 0:
+        return {
+            "modality": config["modality"],
+            "status": "skipped",
+            "reason": "empty manifest",
+            "manifest": str(manifest),
+        }
+
+    if output_path.exists():
+        existing_rows = _parquet_row_count(output_path)
+        if not force and existing_rows == row_count:
+            return {
+                "modality": config["modality"],
+                "status": "skipped",
+                "reason": "preprocessed output already exists",
+                "path": str(output_path),
+                "rows": existing_rows,
+            }
+
+        reason = "force rebuild requested" if force else "incomplete output detected"
         print(
-            "Ray config:",
-            {
-                "batch_size": config["batch_size"],
-                "actor_count": config["actor_count"],
-                "num_gpus_per_actor": config["num_gpus"],
-                "memory_per_actor_gib": round(config["memory"] / 1024**3, 2),
-            },
+            f"Rebuilding {config['modality']} preprocessing: {reason} "
+            f"({existing_rows}/{row_count} rows present)."
         )
-        ray.init(ignore_reinit_error=True)
-        start = time.time()
+        if output_path.is_dir():
+            shutil.rmtree(output_path)
+        else:
+            output_path.unlink()
 
+    print(f"\n--- {config['modality'].upper()} ---")
+    print(
+        "Ray config:",
+        {
+            "batch_size": config["batch_size"],
+            "actor_count": config["actor_count"],
+            "num_gpus_per_actor": config["num_gpus"],
+            "memory_per_actor_gib": round(config["memory"] / 1024**3, 2),
+        },
+    )
+
+    ray.init(ignore_reinit_error=True)
+    start = time.time()
+    try:
         ds = ray.data.read_parquet(str(manifest))
         embedded = ds.map_batches(
             config["preprocessor_class"],
@@ -216,14 +252,275 @@ def stage_02_preprocessing() -> dict:
             num_gpus=config["num_gpus"],
             memory=config["memory"],
         )
-        embedded.write_parquet(str(output_dir / f"{modality}_embedded.parquet"))
-
-        elapsed = time.time() - start
-        results[modality] = {"seconds": round(elapsed, 2)}
+        embedded.write_parquet(str(output_path))
+    finally:
         ray.shutdown()
+
+    elapsed = time.time() - start
+    return {
+        "modality": config["modality"],
+        "status": "ok",
+        "seconds": round(elapsed, 2),
+        "rows": row_count,
+        "path": str(output_path),
+    }
+
+
+def _manifest_name_for_modality(modality: str) -> str:
+    manifest_names = {
+        "text": "fineweb_edu",
+        "image": "coco_captions",
+        "video": "finevideo",
+        "audio": "librispeech",
+    }
+    return manifest_names[modality]
+
+
+def _modality_for_manifest_name(manifest_name: str) -> str:
+    modalities = {
+        "fineweb_edu": "text",
+        "coco_captions": "image",
+        "finevideo": "video",
+        "librispeech": "audio",
+    }
+    return modalities[manifest_name]
+
+
+def _quality_dedup_one_manifest(manifest_name: str, force: bool = False) -> dict:
+    _setup()
+    from src.quality import QualityGate
+    from src.dedup import EmbeddingDeduplicator
+    import pandas as pd
+
+    data = Path(DATA_DIR)
+    modality = _modality_for_manifest_name(manifest_name)
+    manifest = data / "manifests" / f"{manifest_name}_manifest.parquet"
+    output_path = data / "filtered" / f"{manifest_name}_filtered.parquet"
+
+    if not manifest.exists():
+        return {
+            "manifest_name": manifest_name,
+            "modality": modality,
+            "status": "skipped",
+            "reason": "missing manifest",
+            "manifest": str(manifest),
+        }
+
+    if output_path.exists() and not force:
+        existing = _existing_artifact_result(output_path, "filtered output")
+        if existing:
+            return {
+                "manifest_name": manifest_name,
+                "modality": modality,
+                **existing,
+            }
+
+    print(f"\n--- {manifest_name.upper()} ---")
+
+    df = pd.read_parquet(manifest)
+    gate = QualityGate()
+    df = gate.run(df)
+    report = gate.report(df)
+
+    passed = df[df["quality_status"] == "pass"]
+    near_dups = 0
+
+    embedded_path = data / "preprocessed" / f"{modality}_embedded.parquet"
+    if embedded_path.exists() and len(passed) > 0:
+        embedded_df = pd.read_parquet(embedded_path)
+        if "id" in embedded_df.columns and "embedding" in embedded_df.columns:
+            embedded_df = embedded_df[embedded_df["id"].isin(passed["id"])]
+            embeddings = embedded_df["embedding"].tolist()
+            if embeddings:
+                first_embedding = embeddings[0]
+                if hasattr(first_embedding, "tolist"):
+                    first_embedding = first_embedding.tolist()
+                deduper = EmbeddingDeduplicator(dim=len(first_embedding))
+                keep_ids = deduper.deduplicate(
+                    ids=embedded_df["id"].tolist(),
+                    embeddings=[
+                        e.tolist() if hasattr(e, "tolist") else e for e in embeddings
+                    ],
+                )
+                embedded_ids = set(embedded_df["id"].tolist())
+                duplicate_ids = embedded_ids - set(keep_ids)
+                near_dups = len(duplicate_ids)
+                passed = passed[~passed["id"].isin(duplicate_ids)]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    passed.to_parquet(output_path, index=False)
+
+    return {
+        "manifest_name": manifest_name,
+        "modality": modality,
+        "status": "ok",
+        "path": str(output_path),
+        **report,
+        "near_duplicates_removed": near_dups,
+        "rows_final": len(passed),
+    }
+
+
+@app.function(
+    cpu=4,
+    memory=16_384,
+    timeout=3600,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_01_connectors(
+    text_limit: int = 500,
+    image_limit: int = 100,
+    video_limit: int = 50,
+    audio_limit: int = 100,
+    force: bool = False,
+) -> dict:
+    """Stage 1-2: Source connectors + CAS ingestion."""
+    results = {}
+    for modality, limit in [
+        ("text", text_limit),
+        ("image", image_limit),
+        ("video", video_limit),
+        ("audio", audio_limit),
+    ]:
+        print(f"--- {modality.title()} ---")
+        results[modality] = _run_connector(modality, limit=limit, force=force)
+
+    volume.commit()
+    return {"stage": "connectors", "status": "ok", "results": results}
+
+
+@app.function(
+    cpu=4,
+    memory=16_384,
+    timeout=3600,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_01_text_connector(text_limit: int = 500, force: bool = False) -> dict:
+    result = _run_connector("text", limit=text_limit, force=force)
+    volume.commit()
+    return {"stage": "connector", **result}
+
+
+@app.function(
+    cpu=4,
+    memory=16_384,
+    timeout=3600,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_01_image_connector(image_limit: int = 100, force: bool = False) -> dict:
+    result = _run_connector("image", limit=image_limit, force=force)
+    volume.commit()
+    return {"stage": "connector", **result}
+
+
+@app.function(
+    cpu=4,
+    memory=16_384,
+    timeout=10_800,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_01_video_connector(video_limit: int = 50, force: bool = False) -> dict:
+    result = _run_connector("video", limit=video_limit, force=force)
+    volume.commit()
+    return {"stage": "connector", **result}
+
+
+@app.function(
+    cpu=4,
+    memory=16_384,
+    timeout=3600,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_01_audio_connector(audio_limit: int = 100, force: bool = False) -> dict:
+    result = _run_connector("audio", limit=audio_limit, force=force)
+    volume.commit()
+    return {"stage": "connector", **result}
+
+
+@app.function(
+    gpu="L4:2",
+    cpu=8,
+    memory=49_152,
+    timeout=10_800,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_02_preprocessing(force: bool = False) -> dict:
+    """Stage 3: Ray Data preprocessing with stateful actors."""
+    _setup()
+    results = {}
+
+    for config in _preprocessing_configs():
+        result = _preprocess_one_modality(config, force=force)
+        results[result["modality"]] = result
 
     volume.commit()
     return {"stage": "preprocessing", "status": "ok", "results": results}
+
+
+@app.function(
+    gpu="L4:2",
+    cpu=8,
+    memory=49_152,
+    timeout=10_800,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_02_preprocess_text(force: bool = False) -> dict:
+    config = next(c for c in _preprocessing_configs() if c["modality"] == "text")
+    result = _preprocess_one_modality(config, force=force)
+    volume.commit()
+    return {"stage": "preprocess", **result}
+
+
+@app.function(
+    gpu="L4:2",
+    cpu=8,
+    memory=49_152,
+    timeout=10_800,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_02_preprocess_image(force: bool = False) -> dict:
+    config = next(c for c in _preprocessing_configs() if c["modality"] == "image")
+    result = _preprocess_one_modality(config, force=force)
+    volume.commit()
+    return {"stage": "preprocess", **result}
+
+
+@app.function(
+    gpu="L4:2",
+    cpu=8,
+    memory=49_152,
+    timeout=10_800,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_02_preprocess_video(force: bool = False) -> dict:
+    config = next(c for c in _preprocessing_configs() if c["modality"] == "video")
+    result = _preprocess_one_modality(config, force=force)
+    volume.commit()
+    return {"stage": "preprocess", **result}
+
+
+@app.function(
+    gpu="L4:2",
+    cpu=8,
+    memory=49_152,
+    timeout=10_800,
+    volumes={DATA_DIR: volume},
+    secrets=[modal.Secret.from_name("hf-token")],
+)
+def stage_02_preprocess_audio(force: bool = False) -> dict:
+    config = next(c for c in _preprocessing_configs() if c["modality"] == "audio")
+    result = _preprocess_one_modality(config, force=force)
+    volume.commit()
+    return {"stage": "preprocess", **result}
 
 
 @app.function(
@@ -232,73 +529,36 @@ def stage_02_preprocessing() -> dict:
     timeout=1800,
     volumes={DATA_DIR: volume},
 )
-def stage_03_quality_dedup() -> dict:
+def stage_03_quality_dedup(force: bool = False) -> dict:
     """Stage 4: Quality gates + ANN dedup."""
     _setup()
-    from src.quality import QualityGate
-    from src.dedup import EmbeddingDeduplicator
-    import pandas as pd
-
-    data = Path(DATA_DIR)
     results = {}
-    modality_names = {
-        "fineweb_edu": "text",
-        "coco_captions": "image",
-        "finevideo": "video",
-        "librispeech": "audio",
-    }
 
     for manifest_name in ["coco_captions", "finevideo", "fineweb_edu", "librispeech"]:
-        manifest = data / "manifests" / f"{manifest_name}_manifest.parquet"
-        if not manifest.exists():
-            continue
-        manifest_name = manifest.stem.replace("_manifest", "")
-        modality = modality_names.get(manifest_name, manifest_name)
-        print(f"\n--- {manifest_name.upper()} ---")
-
-        df = pd.read_parquet(manifest)
-        gate = QualityGate()
-        df = gate.run(df)
-        report = gate.report(df)
-
-        passed = df[df["quality_status"] == "pass"]
-        near_dups = 0
-
-        embedded_path = data / "preprocessed" / f"{modality}_embedded.parquet"
-        if embedded_path.exists() and len(passed) > 0:
-            embedded_df = pd.read_parquet(embedded_path)
-            if "id" in embedded_df.columns and "embedding" in embedded_df.columns:
-                embedded_df = embedded_df[embedded_df["id"].isin(passed["id"])]
-                embeddings = embedded_df["embedding"].tolist()
-                if embeddings:
-                    first_embedding = embeddings[0]
-                    if hasattr(first_embedding, "tolist"):
-                        first_embedding = first_embedding.tolist()
-                    deduper = EmbeddingDeduplicator(dim=len(first_embedding))
-                    keep_ids = deduper.deduplicate(
-                        ids=embedded_df["id"].tolist(),
-                        embeddings=[
-                            e.tolist() if hasattr(e, "tolist") else e
-                            for e in embeddings
-                        ],
-                    )
-                    embedded_ids = set(embedded_df["id"].tolist())
-                    duplicate_ids = embedded_ids - set(keep_ids)
-                    near_dups = len(duplicate_ids)
-                    passed = passed[~passed["id"].isin(duplicate_ids)]
-
-        out_dir = data / "filtered"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        passed.to_parquet(out_dir / f"{manifest_name}_filtered.parquet", index=False)
-
-        results[manifest_name] = {
-            **report,
-            "near_duplicates_removed": near_dups,
-            "rows_final": len(passed),
-        }
+        results[manifest_name] = _quality_dedup_one_manifest(
+            manifest_name,
+            force=force,
+        )
 
     volume.commit()
     return {"stage": "quality_dedup", "status": "ok", "results": results}
+
+
+@app.function(
+    cpu=4,
+    memory=16_384,
+    timeout=1800,
+    volumes={DATA_DIR: volume},
+)
+def stage_03_quality_dedup_modality(
+    modality: str,
+    force: bool = False,
+) -> dict:
+    """Stage 4: Quality gates + ANN dedup for one modality."""
+    manifest_name = _manifest_name_for_modality(modality)
+    result = _quality_dedup_one_manifest(manifest_name, force=force)
+    volume.commit()
+    return {"stage": "quality_dedup", **result}
 
 
 @app.function(
@@ -486,3 +746,105 @@ def main(
     print("Stage 9:", result)
 
     print("Pipeline complete.")
+
+
+@app.local_entrypoint()
+def resume(
+    stage: str,
+    modality: str = "all",
+    force: bool = False,
+    text_limit: int = 500,
+    image_limit: int = 100,
+    video_limit: int = 50,
+    audio_limit: int = 100,
+    version_name: str = "multimodal-demo-v001",
+) -> None:
+    """Resume one stage, optionally scoped to one modality."""
+
+    stage = stage.lower().replace("-", "_")
+    modality = modality.lower()
+
+    if stage in {"connector", "connectors", "stage1", "stage_01"}:
+        if modality in {"all", ""}:
+            result = stage_01_connectors.remote(
+                text_limit=text_limit,
+                image_limit=image_limit,
+                video_limit=video_limit,
+                audio_limit=audio_limit,
+                force=force,
+            )
+        elif modality == "text":
+            result = stage_01_text_connector.remote(
+                text_limit=text_limit,
+                force=force,
+            )
+        elif modality == "image":
+            result = stage_01_image_connector.remote(
+                image_limit=image_limit,
+                force=force,
+            )
+        elif modality == "video":
+            result = stage_01_video_connector.remote(
+                video_limit=video_limit,
+                force=force,
+            )
+        elif modality == "audio":
+            result = stage_01_audio_connector.remote(
+                audio_limit=audio_limit,
+                force=force,
+            )
+        else:
+            raise ValueError(f"Unknown modality for connector stage: {modality}")
+        print("Stage 1-2:", result)
+        return
+
+    if stage in {"preprocess", "preprocessing", "stage2", "stage_02", "stage3"}:
+        if modality in {"all", ""}:
+            result = stage_02_preprocessing.remote(force=force)
+        elif modality == "text":
+            result = stage_02_preprocess_text.remote(force=force)
+        elif modality == "image":
+            result = stage_02_preprocess_image.remote(force=force)
+        elif modality == "video":
+            result = stage_02_preprocess_video.remote(force=force)
+        elif modality == "audio":
+            result = stage_02_preprocess_audio.remote(force=force)
+        else:
+            raise ValueError(f"Unknown modality for preprocessing stage: {modality}")
+        print("Stage 3:", result)
+        return
+
+    if stage in {"quality", "dedup", "quality_dedup", "stage4", "stage_03"}:
+        if modality in {"all", ""}:
+            result = stage_03_quality_dedup.remote(force=force)
+        elif modality in {"text", "image", "video", "audio"}:
+            result = stage_03_quality_dedup_modality.remote(
+                modality=modality,
+                force=force,
+            )
+        else:
+            raise ValueError(f"Unknown modality for quality stage: {modality}")
+        print("Stage 4:", result)
+        return
+
+    if stage in {"catalog", "stage5", "stage6", "stage_04"}:
+        result = stage_04_catalog.remote()
+        print("Stage 5-6:", result)
+        return
+
+    if stage in {"version", "versioning", "stage7", "stage_05"}:
+        result = stage_05_versioning.remote(version_name=version_name)
+        print("Stage 7:", result)
+        return
+
+    if stage in {"shard", "shards", "sharding", "stage8", "stage_06"}:
+        result = stage_06_sharding.remote(version_name=version_name)
+        print("Stage 8:", result)
+        return
+
+    if stage in {"benchmark", "stage9", "stage_07"}:
+        result = stage_07_benchmark.remote(version_name=version_name)
+        print("Stage 9:", result)
+        return
+
+    raise ValueError(f"Unknown resume stage: {stage}")

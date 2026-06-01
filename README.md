@@ -158,6 +158,51 @@ Run health checks and batch jobs:
 modal run modal_app.py
 ```
 
+Run the full multimodal pipeline:
+
+```bash
+modal run modal_pipeline.py
+```
+
+If a long run fails or is cancelled, resume the missing part instead of
+restarting everything. Connector and preprocessing stages skip completed
+artifacts by default and rebuild incomplete preprocessing outputs when row
+counts do not match the source manifest.
+
+```bash
+# Re-run only video ingestion.
+modal run modal_pipeline.py::resume --stage connector --modality video --video-limit 2000
+
+# Re-run only one preprocessing modality.
+modal run modal_pipeline.py::resume --stage preprocess --modality video
+modal run modal_pipeline.py::resume --stage preprocess --modality audio
+
+# Continue downstream stages after all modalities are ready.
+modal run modal_pipeline.py::resume --stage quality
+modal run modal_pipeline.py::resume --stage catalog
+modal run modal_pipeline.py::resume --stage versioning
+modal run modal_pipeline.py::resume --stage sharding
+modal run modal_pipeline.py::resume --stage benchmark
+```
+
+Quality/dedup can also resume one modality at a time:
+
+```bash
+modal run modal_pipeline.py::resume --stage quality --modality image
+modal run modal_pipeline.py::resume --stage quality --modality video
+modal run modal_pipeline.py::resume --stage quality --modality text
+modal run modal_pipeline.py::resume --stage quality --modality audio
+```
+
+Use `--force` when you intentionally want to overwrite a completed artifact:
+
+```bash
+modal run modal_pipeline.py::resume --stage preprocess --modality video --force
+```
+
+Do not use `--limit 0` as a resume strategy. The connector writes manifests, so
+a zero limit can overwrite a valid manifest with an empty one.
+
 The Modal app keeps serving and orchestration in one deployment surface while
 leaving reusable pipeline logic in `src/` and `scripts/`. The expanded pipeline
 entry points are:

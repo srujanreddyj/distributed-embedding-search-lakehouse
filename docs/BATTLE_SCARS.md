@@ -634,6 +634,158 @@ higher throughput
 
 The pipeline now uses two L4 GPUs for preprocessing and two GPU actors per modality. The detailed tuning notes live in `docs/RAY_PREPROCESSING_SCALING.md`.
 
+## 27. Timeout is not the same as a code crash
+
+A larger video preprocessing run failed with:
+
+```text
+FunctionTimeoutError: Task's current input hit its timeout of 3600s
+```
+
+The Ray progress logs showed active work, not a Python exception:
+
+```text
+Active resources: 2/2 GPU
+Actors: 2
+MapBatches(VideoPreprocessor): 1385/2015
+Write: 33/48
+```
+
+That means Modal cancelled the function because Stage 3 preprocessing exceeded its one-hour timeout. The video stage was still processing when the deadline arrived.
+
+The reason video is much slower than image is structural:
+
+```text
+image row -> one image -> one CLIP pass
+video row -> several keyframes -> CLIP over frames -> mean pool
+```
+
+The current `VideoPreprocessor` also loops per video row and runs CLIP per clip's keyframes. That is correct but not maximally efficient. A faster version would batch all frames from the Ray batch into one larger CLIP call, then regroup frame embeddings by video and mean-pool.
+
+Ways to handle this:
+
+```text
+short-term demo: lower video_limit or clips_per_video
+operational fix: increase Modal timeout for preprocessing
+engineering fix: batch video frames across clips inside VideoPreprocessor
+scaling fix: use more GPUs/actors
+workflow fix: split preprocessing by modality so a video timeout does not rerun text/image/audio
+```
+
+The broader lesson is that once correctness is solved, the next failures are often orchestration limits. A timeout usually means "the work did not fit the envelope," not "the code is broken."
+
+## 28. Resume by artifact, not by wishful thinking
+
+A later run stopped with:
+
+```text
+Received a cancellation signal.
+RemoteError: Function call was cancelled by user or a failure.
+```
+
+This is different from a Python stack trace. Modal cancelled the running function externally, so the useful question is not "which line crashed?" The useful question is "which artifacts were already committed to the Modal Volume?"
+
+The dangerous shortcut would be to rerun with limits set to zero for completed modalities:
+
+```text
+text_limit=0
+image_limit=0
+video_limit=0
+audio_limit=100
+```
+
+That is unsafe here because connectors write manifest files. A zero-limit connector can replace a good manifest with an empty manifest, and every downstream stage will faithfully process the empty result. The pipeline would look successful while silently deleting the completed modality from the run.
+
+The fix is artifact-aware resume:
+
+```text
+Stage 1 connector output: /data/manifests/*_manifest.parquet
+Stage 2 preprocessing output: /data/preprocessed/*_embedded.parquet
+Stage 3 quality output: /data/filtered/*_filtered.parquet
+Stage 4 catalog output: /data/catalog
+Stage 5 version output: /data/dataset_versions
+Stage 6 shards output: /data/shards
+```
+
+Connector and preprocessing functions now support per-modality resume. Completed artifacts are skipped by default. Preprocessing is stricter: it only skips an existing output when the embedded row count matches the source manifest row count. If a Ray write left a partial Parquet directory behind, that modality is rebuilt instead of being treated as complete.
+
+Useful commands:
+
+```bash
+modal run modal_pipeline.py::resume --stage connector --modality video --video-limit 2000
+modal run modal_pipeline.py::resume --stage preprocess --modality video
+modal run modal_pipeline.py::resume --stage preprocess --modality audio
+modal run modal_pipeline.py::resume --stage quality
+modal run modal_pipeline.py::resume --stage catalog
+modal run modal_pipeline.py::resume --stage versioning
+modal run modal_pipeline.py::resume --stage sharding
+modal run modal_pipeline.py::resume --stage benchmark
+```
+
+Use `--force` only when the completed artifact should be replaced:
+
+```bash
+modal run modal_pipeline.py::resume --stage preprocess --modality video --force
+```
+
+The deeper lesson is that cloud data pipelines need restart semantics as much as they need model code. Once a run lasts long enough to be cancelled, timed out, or interrupted, "start from the top" becomes expensive and risky. The system should resume from committed artifacts, detect partial outputs, and make destructive overwrites explicit.
+
+## 29. A completed Stage 3 can still fail in Stage 4
+
+A large run finished preprocessing all modalities:
+
+```text
+text: 100000 rows in 41.98s
+image: 25000 rows in 152.06s
+video: 1000 rows in 59.44s
+audio: 20000 rows in 1023.87s
+```
+
+Then the app stopped during quality/dedup:
+
+```text
+--- COCO_CAPTIONS ---
+Received a cancellation signal while processing input
+RemoteError: Function call was cancelled by user or a failure.
+```
+
+This means the expensive GPU preprocessing was already written to:
+
+```text
+/data/preprocessed/text_embedded.parquet
+/data/preprocessed/image_embedded.parquet
+/data/preprocessed/video_embedded.parquet
+/data/preprocessed/audio_embedded.parquet
+```
+
+The failure happened in the CPU quality/dedup stage, so the correct recovery is not to rerun Stage 1 or Stage 2. The correct recovery is to resume Stage 4.
+
+Stage 4 is now resumable by modality:
+
+```bash
+modal run modal_pipeline.py::resume --stage quality --modality image
+modal run modal_pipeline.py::resume --stage quality --modality video
+modal run modal_pipeline.py::resume --stage quality --modality text
+modal run modal_pipeline.py::resume --stage quality --modality audio
+```
+
+Or run the whole quality stage and let completed filtered outputs skip:
+
+```bash
+modal run modal_pipeline.py::resume --stage quality
+```
+
+After quality/dedup succeeds for all four modalities, continue:
+
+```bash
+modal run modal_pipeline.py::resume --stage catalog
+modal run modal_pipeline.py::resume --stage versioning
+modal run modal_pipeline.py::resume --stage sharding
+modal run modal_pipeline.py::resume --stage benchmark
+```
+
+The important debugging move is to locate the stage boundary. The log line `Stage 3: {'status': 'ok'...}` is the checkpoint. Anything after that should be recovered from Stage 4 onward.
+
 ## Interview framing
 
 The hardest part was not embedding text or images. The hard part was making the pipeline semantics honest.
