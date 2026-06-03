@@ -339,6 +339,95 @@ items, seconds, items_per_second, mb_per_second
 
 The architecture does not change as scale increases — Ray partitions data, actors keep models warm, Modal provides ephemeral GPU compute, LanceDB persists queryable embeddings, and manifests version everything. Each of those interfaces scales independently.
 
+## Future Considerations
+
+These are the next concepts to learn and potentially add. They are not fully implemented in the current demo, but they map directly to ML infrastructure work that appears in production training and inference systems.
+
+### GPU-Aware Data Loading Benchmark
+
+**Current state:** The project materializes WebDataset-style tar shards and measures CPU-side shard reading throughput. That proves sequential sharding and basic loader performance, but it does not yet measure whether the input pipeline can keep a GPU fed.
+
+**Future implementation:**
+- Add a mini PyTorch training input loop over the materialized shards.
+- Sweep `batch_size`, `num_workers`, `prefetch_factor`, shard size, and pinned memory.
+- Measure samples/sec, batches/sec, host-to-device transfer time, loader wait time, and simulated GPU step time.
+- Compare small-file reads vs tar shard reads.
+- Report where the bottleneck moves as workers/prefetch increase.
+
+**Concepts to learn:**
+- PyTorch `Dataset`, `IterableDataset`, and `DataLoader`
+- `num_workers`, `prefetch_factor`, `persistent_workers`, and pinned memory
+- Host-to-device transfer and CUDA synchronization
+- Input pipeline stalls, GPU utilization, and backpressure
+- WebDataset shuffling and shard-level randomness
+
+**Interview framing:** "I benchmarked not just how fast files read, but whether the loader keeps the accelerator busy. The useful metric is not only MB/sec; it is GPU idle time caused by input stalls."
+
+### Transform Pipeline: Resampling, Clipping, Segmentation, Augmentation, Feature Extraction
+
+**Current state:** The pipeline already handles multimodal feature extraction, audio resampling, video clipping/keyframe extraction, quality filtering, and Ray/Modal scaling. Richer segmentation and augmentation policy tracking are future upgrades.
+
+**Future implementation:**
+- Audio: resample, trim silence, normalize loudness, segment long audio, then extract Whisper/audio features.
+- Video: decode bytes, segment into clips, detect low-quality clips, sample keyframes, then extract CLIP/video features.
+- Image: validate decode, resize, normalize, optionally augment at training time.
+- Text: normalize, length filter, dedup, safety filter, then embed.
+- Track transform config in the dataset version manifest.
+- Produce quality and throughput reports per transform stage.
+
+**Concepts to learn:**
+- Audio sample rates, mono/stereo conversion, clipping, silence detection, loudness normalization
+- Video decoding, frame sampling, scene detection, keyframe extraction, clip-level quality metrics
+- Deterministic transforms vs stochastic training augmentations
+- Data quality gates, rejection reasons, and transform provenance
+- Ray Data `map_batches`, `flat_map`, actor pools, and memory pressure
+
+**Interview framing:** "The pipeline separates deterministic preprocessing from stochastic augmentation. Deterministic transforms are versioned and reproducible; cheap random augmentations stay in the training loader for diversity."
+
+### Batch Inference Service With Safe Retries
+
+**Current state:** The project has a Modal/Ray batch inference pipeline with artifact-aware resume. It reads manifests, runs GPU-backed embedding in batches, writes Parquet/catalog outputs, and can retry failed modalities without rerunning completed work. It is not yet a continuously running service that watches for new data.
+
+**Future implementation:**
+- Add a job table or queue with `pending`, `running`, `succeeded`, `failed`, and `dead_letter` states.
+- Use idempotency keys such as `content_hash + model_version + transform_version`.
+- Batch new rows by modality and model.
+- Write outputs through a temporary path, then commit atomically.
+- Retry transient failures with bounded retry counts and error logs.
+- Store run metadata: code version, model version, input manifest, output artifact, timings, and failure reason.
+
+**Concepts to learn:**
+- Idempotent batch jobs
+- Retry policies, dead-letter queues, and poison-pill records
+- Exactly-once vs at-least-once processing
+- Atomic writes and partial-output detection
+- Run metadata, lineage, and reproducibility
+- Training/inference boundary: offline embedding as batch inference feeding downstream training/search systems
+
+**Interview framing:** "The important production property is idempotency. A failed embedding job should be safe to retry because outputs are keyed by content hash, model version, and transform version."
+
+### Observability, Drift, And Rollback
+
+**Current state:** The pipeline reports stage results, quality counts, loader metrics, and artifact status. It also supports manual resume and dataset-version rollback. It does not yet have production observability.
+
+**Future implementation:**
+- Track freshness: newest source timestamp, last successful stage, and stale artifact detection.
+- Track skew/drift: modality mix, source mix, embedding norm distribution, quality-pass rate, duplicate rate, and license distribution.
+- Emit OpenLineage-style events for each stage.
+- Add Grafana/Prometheus dashboards for throughput, failures, queue depth, and cost.
+- Alert on failed stages, stale catalog, quality-pass collapse, or unexpected modality imbalance.
+- Roll back by selecting a previous dataset version manifest.
+
+**Concepts to learn:**
+- Data observability vs system observability
+- Freshness, volume, schema, distribution, and lineage checks
+- Metrics, logs, traces, and pipeline events
+- Prometheus/Grafana basics
+- OpenLineage concepts: job, run, dataset, input/output facets
+- Rollback through immutable manifests
+
+**Interview framing:** "For ML data, observability means knowing whether the dataset changed in a dangerous way, not only whether the job returned 200 OK."
+
 ## Known Limitations
 
 - Demo-scale datasets — metrics are correctness/architecture validation, not production benchmarks
